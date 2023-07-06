@@ -44,7 +44,7 @@ authenticate properly by running `aws sts get-caller-identity`.
 After setting up the tools, set the Karpenter version number:
 
 ```bash
-export KARPENTER_VERSION=v0.29.0
+export KARPENTER_VERSION=v0.28.1
 ```
 
 Then set the following environment variable:
@@ -78,11 +78,6 @@ The following cluster configuration will:
 {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step02-create-cluster.sh" language="bash"%}}
 
 {{% script file="./content/en/{VERSION}/getting-started/getting-started-with-karpenter/scripts/step06-add-spot-role.sh" language="bash"%}}
-
-{{% alert title="Windows Support Notice" color="warning" %}}
-In order to run Windows workloads, Windows support should be enabled in your EKS Cluster.
-See [Enabling Windows support](https://docs.aws.amazon.com/eks/latest/userguide/windows-support.html#enable-windows-support) to learn more.
-{{% /alert %}}
 
 ### 4. Install Karpenter
 

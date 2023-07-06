@@ -15,7 +15,7 @@ AWS is the first cloud provider supported by Karpenter, although it is designed 
 
 ### Can I write my own cloud provider for Karpenter?
 Yes, but there is no documentation yet for it.
-Start with Karpenter's GitHub [cloudprovider](https://github.com/aws/karpenter-core/tree/v0.29.0/pkg/cloudprovider) documentation to see how the AWS provider is built, but there are other sections of the code that will require changes too.
+Start with Karpenter's GitHub [cloudprovider](https://github.com/aws/karpenter-core/tree/v0.28.1/pkg/cloudprovider) documentation to see how the AWS provider is built, but there are other sections of the code that will require changes too.
 
 ### What operating system nodes does Karpenter deploy?
 By default, Karpenter uses Amazon Linux 2 images.
@@ -28,7 +28,7 @@ Karpenter is flexible to multi architecture configurations using [well known lab
 
 ### What RBAC access is required?
 All of the required RBAC rules can be found in the helm chart template.
-See [clusterrolebinding.yaml](https://github.com/aws/karpenter/blob/v0.29.0/charts/karpenter/templates/clusterrolebinding.yaml), [clusterrole.yaml](https://github.com/aws/karpenter/blob/v0.29.0/charts/karpenter/templates/clusterrole.yaml), [rolebinding.yaml](https://github.com/aws/karpenter/blob/v0.29.0/charts/karpenter/templates/rolebinding.yaml), and [role.yaml](https://github.com/aws/karpenter/blob/v0.29.0/charts/karpenter/templates/role.yaml) files for details.
+See [clusterrolebinding.yaml](https://github.com/aws/karpenter/blob/v0.28.1/charts/karpenter/templates/clusterrolebinding.yaml), [clusterrole.yaml](https://github.com/aws/karpenter/blob/v0.28.1/charts/karpenter/templates/clusterrole.yaml), [rolebinding.yaml](https://github.com/aws/karpenter/blob/v0.28.1/charts/karpenter/templates/rolebinding.yaml), and [role.yaml](https://github.com/aws/karpenter/blob/v0.28.1/charts/karpenter/templates/role.yaml) files for details.
 
 ### Can I run Karpenter outside of a Kubernetes cluster?
 Yes, as long as the controller has network and IAM/RBAC access to the Kubernetes API and your provider API.
@@ -155,10 +155,6 @@ spec:
 
 For more documentation on enabling IPv6 with the Amazon VPC CNI, see the [docs](https://docs.aws.amazon.com/eks/latest/userguide/cni-ipv6.html).
 
-{{% alert title="Windows Support Notice" color="warning" %}}
-Windows nodes do not support IPv6.
-{{% /alert %}}
-
 ## Scheduling
 
 ### When using preferred scheduling constraints, Karpenter launches the correct number of nodes at first.  Why do they then sometimes get consolidated immediately?
@@ -186,16 +182,6 @@ Yes.  See [Persistent Volume Topology]({{< ref "./concepts/scheduling#persistent
 
 ### Can I set `--max-pods` on my nodes?
 Yes, see the [KubeletConfiguration Section in the Provisioners Documentation]({{<ref "./concepts/provisioners#speckubeletconfiguration" >}}) to learn more.
-
-### Why do the Windows2019 and Windows2022 AMI families only support Windows Server Core?
-The difference between the Core and Full variants is that Core is a minimal OS with less components and no graphic user interface (GUI) or desktop experience.
-`Windows2019` and `Windows2022` AMI families use the Windows Server Core option for simplicity, but if required, you can specify a custom AMI to run Windows Server Full.
-
-You can specify the [Amazon EKS optimized AMI](https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-windows-ami.html) with Windows Server 2022 Full for Kubernetes 1.27 by configuring an `amiSelector` that references the AMI name.
-```
-amiSelector:
-    aws::name: Windows_Server-2022-English-Full-EKS_Optimized-1.27*
-```
 
 ## Deprovisioning
 ### How does Karpenter deprovision nodes?
