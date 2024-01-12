@@ -208,6 +208,7 @@ func (p *Provider) UpdateOnDemandPricing(ctx context.Context) error {
 		return &Err{error: errors.New("no on-demand pricing found"), lastUpdateTime: p.onDemandUpdateTime}
 	}
 
+	// account for 28% compute savings plan for on-demand instances
 	p.onDemandPrices = lo.Assign(onDemandPrices, onDemandMetalPrices)
 	p.onDemandUpdateTime = time.Now()
 	for instanceType, price := range p.onDemandPrices {
@@ -216,7 +217,7 @@ func (p *Provider) UpdateOnDemandPricing(ctx context.Context) error {
 			CapacityTypeLabel: ec2.UsageClassTypeOnDemand,
 			RegionLabel:       p.region,
 			TopologyLabel:     "",
-		}).Set(price)
+		}).Set(price* 0.72)
 	}
 	if p.cm.HasChanged("on-demand-prices", p.onDemandPrices) {
 		logging.FromContext(ctx).With("instance-type-count", len(p.onDemandPrices)).Infof("updated on-demand pricing")
