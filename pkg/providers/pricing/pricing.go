@@ -136,7 +136,8 @@ func (p *DefaultProvider) OnDemandPrice(instanceType string) (float64, bool) {
 	if !ok {
 		return 0.0, false
 	}
-	return price, true
+	// account for 28% compute savings plan for on-demand instances	
+	return price * 0.72, true
 }
 
 // SpotPrice returns the last known spot price for a given instance type and zone, returning an error
