@@ -194,6 +194,7 @@ func (p *Provider) UpdateOnDemandPricing(ctx context.Context) error {
 		return fmt.Errorf("no on-demand pricing found")
 	}
 
+	// account for 28% compute savings plan for on-demand instances
 	p.onDemandPrices = lo.Assign(onDemandPrices, onDemandMetalPrices)
 	for instanceType, price := range p.onDemandPrices {
 		InstancePriceEstimate.With(prometheus.Labels{
@@ -201,7 +202,7 @@ func (p *Provider) UpdateOnDemandPricing(ctx context.Context) error {
 			CapacityTypeLabel: ec2.UsageClassTypeOnDemand,
 			RegionLabel:       p.region,
 			TopologyLabel:     "",
-		}).Set(price)
+		}).Set(price* 0.72)
 	}
 	if p.cm.HasChanged("on-demand-prices", p.onDemandPrices) {
 		logging.FromContext(ctx).With("instance-type-count", len(p.onDemandPrices)).Debugf("updated on-demand pricing")
