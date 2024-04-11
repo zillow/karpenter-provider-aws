@@ -270,11 +270,12 @@ func (env *Environment) ExpectPrefixDelegationDisabled() {
 		"ENABLE_PREFIX_DELEGATION", "false", "aws-node")
 }
 
-func (env *Environment) ExpectExists(obj client.Object) {
+func (env *Environment) ExpectExists(obj client.Object) client.Object {
 	GinkgoHelper()
 	Eventually(func(g Gomega) {
 		g.Expect(env.Client.Get(env, client.ObjectKeyFromObject(obj), obj)).To(Succeed())
 	}).WithTimeout(time.Second * 5).Should(Succeed())
+	return obj
 }
 
 func (env *Environment) EventuallyExpectHealthy(pods ...*v1.Pod) {
@@ -665,6 +666,18 @@ func (env *Environment) EventuallyExpectNodeClaimsReady(nodeClaims ...*corev1bet
 			g.Expect(temp.StatusConditions().IsHappy()).To(BeTrue())
 		}
 	}).Should(Succeed())
+}
+
+func (env *Environment) ConsistentlyExpectNodeClaimsNotDrifted(duration time.Duration, nodeClaims ...*corev1beta1.NodeClaim) {
+	GinkgoHelper()
+	nodeClaimNames := lo.Map(nodeClaims, func(nc *corev1beta1.NodeClaim, _ int) string { return nc.Name })
+	By(fmt.Sprintf("consistently expect nodeclaims %s not to be drifted for %s", nodeClaimNames, duration))
+	Consistently(func(g Gomega) {
+		for _, nc := range nodeClaims {
+			g.Expect(env.Client.Get(env, client.ObjectKeyFromObject(nc), nc)).To(Succeed())
+			g.Expect(nc.StatusConditions().GetCondition(corev1beta1.Drifted)).To(BeNil())
+		}
+	}, duration).Should(Succeed())
 }
 
 func (env *Environment) GetNode(nodeName string) v1.Node {
