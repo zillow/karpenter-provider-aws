@@ -31,10 +31,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	ec22 "github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/samber/lo"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	controllerspricing "github.com/aws/karpenter-provider-aws/pkg/controllers/pricing"
+	controllerspricing "github.com/aws/karpenter-provider-aws/pkg/controllers/providers/pricing"
 	"github.com/aws/karpenter-provider-aws/pkg/operator/options"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/pricing"
 	"github.com/aws/karpenter-provider-aws/pkg/test"
@@ -110,7 +108,7 @@ func main() {
 		log.Println("fetching for", region)
 		pricingProvider := pricing.NewDefaultProvider(ctx, pricing.NewAPI(sess, region), ec2, region)
 		controller := controllerspricing.NewController(pricingProvider)
-		_, err := controller.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{}})
+		_, err := controller.Reconcile(ctx)
 		if err != nil {
 			log.Fatalf("failed to initialize pricing provider %s", err)
 		}

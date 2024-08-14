@@ -16,14 +16,13 @@ on:
       k8s_version:
         type: choice
         options:
-          - "1.23"
-          - "1.24"
           - "1.25"
           - "1.26"
           - "1.27"
           - "1.28"
           - "1.29"
-        default: "1.29"
+          - "1.30"
+        default: "1.30"
       cleanup:
         required: true
         default: true
@@ -40,7 +39,7 @@ on:
         default: "us-east-2"
       k8s_version:
         type: string
-        default: "1.29"
+        default: "1.30"
       cleanup:
         required: true
         type: boolean
@@ -90,7 +89,7 @@ jobs:
           region: ${{ inputs.region }}
           cluster_name: ${{ steps.generate-cluster-name.outputs.CLUSTER_NAME }}
           k8s_version: ${{ inputs.k8s_version }}
-          eksctl_version: v0.169.0
+          eksctl_version: v0.180.0
           ip_family: IPv4 # Set the value to IPv6 if IPv6 suite, else IPv4
           git_ref: ${{ inputs.from_git_ref }}
           ecr_account_id: ${{ vars.SNAPSHOT_ACCOUNT_ID }}
@@ -100,21 +99,6 @@ jobs:
       - uses: actions/checkout@9bb56186c3b09b4f86b1c65136769dd318469633 # v4.1.2
         with:
           ref: ${{ inputs.to_git_ref }}
-      - name: upgrade eks cluster '${{ steps.generate-cluster-name.outputs.CLUSTER_NAME }}'
-        uses: ./.github/actions/e2e/setup-cluster
-        with:
-          account_id: ${{ vars.CI_ACCOUNT_ID }}
-          role: ${{ vars.CI_ROLE_NAME }}
-          region: ${{ inputs.region }}
-          cluster_name: ${{ steps.generate-cluster-name.outputs.CLUSTER_NAME }}
-          k8s_version: ${{ inputs.k8s_version }}
-          eksctl_version: v0.169.0
-          ip_family: IPv4 # Set the value to IPv6 if IPv6 suite, else IPv4
-          git_ref: ${{ inputs.to_git_ref }}
-          ecr_account_id: ${{ vars.SNAPSHOT_ACCOUNT_ID }}
-          ecr_region: ${{ vars.SNAPSHOT_REGION }}
-          prometheus_workspace_id: ${{ vars.WORKSPACE_ID }}
-          prometheus_region: ${{ vars.PROMETHEUS_REGION }}
       - name: upgrade crds
         uses: ./.github/actions/e2e/upgrade-crds
         with:
@@ -123,6 +107,21 @@ jobs:
           region: ${{ inputs.region }}
           cluster_name: ${{ steps.generate-cluster-name.outputs.CLUSTER_NAME }}
           git_ref: ${{ inputs.to_git_ref }}
+      - name: upgrade eks cluster '${{ steps.generate-cluster-name.outputs.CLUSTER_NAME }}'
+        uses: ./.github/actions/e2e/setup-cluster
+        with:
+          account_id: ${{ vars.CI_ACCOUNT_ID }}
+          role: ${{ vars.CI_ROLE_NAME }}
+          region: ${{ inputs.region }}
+          cluster_name: ${{ steps.generate-cluster-name.outputs.CLUSTER_NAME }}
+          k8s_version: ${{ inputs.k8s_version }}
+          eksctl_version: v0.180.0
+          ip_family: IPv4 # Set the value to IPv6 if IPv6 suite, else IPv4
+          git_ref: ${{ inputs.to_git_ref }}
+          ecr_account_id: ${{ vars.SNAPSHOT_ACCOUNT_ID }}
+          ecr_region: ${{ vars.SNAPSHOT_REGION }}
+          prometheus_workspace_id: ${{ vars.WORKSPACE_ID }}
+          prometheus_region: ${{ vars.PROMETHEUS_REGION }}
       - name: run the Upgrade test suite
         run: |
           aws eks update-kubeconfig --name ${{ steps.generate-cluster-name.outputs.CLUSTER_NAME }}
@@ -152,7 +151,7 @@ jobs:
           region: ${{ inputs.region }}
           cluster_name: ${{ steps.generate-cluster-name.outputs.CLUSTER_NAME }}
           git_ref: ${{ inputs.to_git_ref }}
-          eksctl_version: v0.169.0
+          eksctl_version: v0.180.0
       - if: always() && github.event_name == 'workflow_run'
         uses: ./.github/actions/commit-status/end
         with:

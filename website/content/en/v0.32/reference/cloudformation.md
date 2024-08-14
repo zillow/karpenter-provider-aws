@@ -17,7 +17,7 @@ These descriptions should allow you to understand:
 To download a particular version of `cloudformation.yaml`, set the version and use `curl` to pull the file to your local system:
 
 ```bash
-export KARPENTER_VERSION=v0.32.9
+export KARPENTER_VERSION=v0.32.10
 curl https://raw.githubusercontent.com/aws/karpenter-provider-aws/"${KARPENTER_VERSION}"/website/content/en/preview/getting-started/getting-started-with-karpenter/cloudformation.yaml > cloudformation.yaml
 ```
 
@@ -350,14 +350,14 @@ This gives EC2 permission explicit permission to use the `KarpenterNodeRole-${Cl
 #### AllowScopedInstanceProfileCreationActions
 
 The AllowScopedInstanceProfileCreationActions Sid gives the Karpenter controller permission to create a new instance profile with [`iam:CreateInstanceProfile`](https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreateInstanceProfile.html),
-provided that the request is made to a cluster with `kubernetes.io/cluster/${ClusterName` set to owned and is made in the current region.
+provided that the request is made to a cluster with `kubernetes.io/cluster/${ClusterName}` set to owned and is made in the current region.
 Also, `karpenter.k8s.aws/ec2nodeclass` must be set to some value. This ensures that Karpenter can generate instance profiles on your behalf based on roles specified in your `EC2NodeClasses` that you use to configure Karpenter.
 
 ```json
 {
   "Sid": "AllowScopedInstanceProfileCreationActions",
   "Effect": "Allow",
-  "Resource": "*",
+  "Resource": "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*",
   "Action": [
     "iam:CreateInstanceProfile"
   ],
@@ -382,7 +382,7 @@ Also, `karpenter.k8s.aws/ec2nodeclass` must be set to some value. This ensures t
 {
   "Sid": "AllowScopedInstanceProfileTagActions",
   "Effect": "Allow",
-  "Resource": "*",
+  "Resource": "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*",
   "Action": [
     "iam:TagInstanceProfile"
   ],
@@ -405,14 +405,14 @@ Also, `karpenter.k8s.aws/ec2nodeclass` must be set to some value. This ensures t
 #### AllowScopedInstanceProfileActions
 
 The AllowScopedInstanceProfileActions Sid gives the Karpenter controller permission to perform [`iam:AddRoleToInstanceProfile`](https://docs.aws.amazon.com/IAM/latest/APIReference/API_AddRoleToInstanceProfile.html), [`iam:RemoveRoleFromInstanceProfile`](https://docs.aws.amazon.com/IAM/latest/APIReference/API_RemoveRoleFromInstanceProfile.html), and [`iam:DeleteInstanceProfile`](https://docs.aws.amazon.com/IAM/latest/APIReference/API_DeleteInstanceProfile.html) actions,
-provided that the request is made to a cluster with `kubernetes.io/cluster/${ClusterName` set to owned and is made in the current region.
+provided that the request is made to a cluster with `kubernetes.io/cluster/${ClusterName}` set to owned and is made in the current region.
 Also, `karpenter.k8s.aws/ec2nodeclass` must be set to some value. This permission is further enforced by the `iam:PassRole` permission. If Karpenter attempts to add a role to an instance profile that it doesn't have `iam:PassRole` permission on, that call will fail. Therefore, if you configure Karpenter to use a new role through the `EC2NodeClass`, ensure that you also specify that role within your `iam:PassRole` permission.
 
 ```json
 {
   "Sid": "AllowScopedInstanceProfileActions",
   "Effect": "Allow",
-  "Resource": "*",
+  "Resource": "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*",
   "Action": [
     "iam:AddRoleToInstanceProfile",
     "iam:RemoveRoleFromInstanceProfile",
@@ -438,7 +438,7 @@ The AllowInstanceProfileActions Sid gives the Karpenter controller permission to
 {
   "Sid": "AllowInstanceProfileReadActions",
   "Effect": "Allow",
-  "Resource": "*",
+  "Resource": "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*",
   "Action": "iam:GetInstanceProfile"
 }
 ```
@@ -499,6 +499,7 @@ KarpenterInterruptionQueue:
 
 The Karpenter interruption queue policy is created to allow AWS services that we want to receive instance notifications from to push notification messages to the queue.
 The [AWS::SQS::QueuePolicy](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-sqs-queuepolicy.html) resource here applies `EC2InterruptionPolicy` to the `KarpenterInterruptionQueue`. The policy allows [sqs:SendMessage](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessage.html) actions to `events.amazonaws.com` and `sqs.amazonaws.com` services. It also allows the `GetAtt` function to get attributes from `KarpenterInterruptionQueue.Arn`.
+Additionally, it only allows access to the queue using encrypted connections over HTTPS (TLS) to adhere to [Amazon SQS Security Best Practices](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-security-best-practices.html#enforce-encryption-data-in-transit).
 
 ```yaml
 KarpenterInterruptionQueuePolicy:
@@ -516,6 +517,14 @@ KarpenterInterruptionQueuePolicy:
               - sqs.amazonaws.com
           Action: sqs:SendMessage
           Resource: !GetAtt KarpenterInterruptionQueue.Arn
+        - Sid: DenyHTTP
+          Effect: Deny
+          Action: sqs:*
+          Resource: !GetAtt KarpenterInterruptionQueue.Arn
+          Condition:
+            Bool:
+              aws:SecureTransport: false
+          Principal: "*"
 ```
 
 ### Rules

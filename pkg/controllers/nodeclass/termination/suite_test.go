@@ -20,24 +20,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samber/lo"
-	"k8s.io/client-go/tools/record"
-	_ "knative.dev/pkg/system/testing"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/karpenter/pkg/test/v1alpha1"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/iam"
-	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
+	"github.com/awslabs/operatorpkg/object"
+	"github.com/samber/lo"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/events"
-	corecontroller "sigs.k8s.io/karpenter/pkg/operator/controller"
 	coreoptions "sigs.k8s.io/karpenter/pkg/operator/options"
-	"sigs.k8s.io/karpenter/pkg/operator/scheme"
 	coretest "sigs.k8s.io/karpenter/pkg/test"
 
 	"github.com/aws/karpenter-provider-aws/pkg/apis"
-	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
+	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
 	"github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclass/termination"
 	"github.com/aws/karpenter-provider-aws/pkg/fake"
 	"github.com/aws/karpenter-provider-aws/pkg/operator/options"
@@ -45,14 +43,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "knative.dev/pkg/logging/testing"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
+	. "sigs.k8s.io/karpenter/pkg/utils/testing"
 )
 
 var ctx context.Context
 var env *coretest.Environment
 var awsEnv *test.Environment
-var terminationController corecontroller.Controller
+var terminationController *termination.Controller
 
 func TestAPIs(t *testing.T) {
 	ctx = TestContextWithLogger(t)
@@ -61,7 +59,7 @@ func TestAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	env = coretest.NewEnvironment(scheme.Scheme, coretest.WithCRDs(apis.CRDs...), coretest.WithFieldIndexers(test.EC2NodeClassFieldIndexer(ctx)))
+	env = coretest.NewEnvironment(coretest.WithCRDs(apis.CRDs...), coretest.WithCRDs(v1alpha1.CRDs...), coretest.WithFieldIndexers(test.EC2NodeClassFieldIndexer(ctx)))
 	ctx = coreoptions.ToContext(ctx, coretest.Options())
 	ctx = options.ToContext(ctx, test.Options())
 	awsEnv = test.NewEnvironment(ctx, env)
@@ -83,22 +81,23 @@ var _ = AfterEach(func() {
 })
 
 var _ = Describe("NodeClass Termination", func() {
-	var nodeClass *v1beta1.EC2NodeClass
+	var nodeClass *v1.EC2NodeClass
 	var profileName string
 	BeforeEach(func() {
-		nodeClass = test.EC2NodeClass(v1beta1.EC2NodeClass{
-			Spec: v1beta1.EC2NodeClassSpec{
-				SubnetSelectorTerms: []v1beta1.SubnetSelectorTerm{
+		nodeClass = test.EC2NodeClass(v1.EC2NodeClass{
+			Spec: v1.EC2NodeClassSpec{
+				SubnetSelectorTerms: []v1.SubnetSelectorTerm{
 					{
 						Tags: map[string]string{"*": "*"},
 					},
 				},
-				SecurityGroupSelectorTerms: []v1beta1.SecurityGroupSelectorTerm{
+				SecurityGroupSelectorTerms: []v1.SecurityGroupSelectorTerm{
 					{
 						Tags: map[string]string{"*": "*"},
 					},
 				},
-				AMISelectorTerms: []v1beta1.AMISelectorTerm{
+				AMIFamily: lo.ToPtr(v1.AMIFamilyCustom),
+				AMISelectorTerms: []v1.AMISelectorTerm{
 					{
 						Tags: map[string]string{"*": "*"},
 					},
@@ -113,13 +112,13 @@ var _ = Describe("NodeClass Termination", func() {
 		awsEnv.EC2API.LaunchTemplates.Store(launchTemplateName, &ec2.LaunchTemplate{LaunchTemplateName: launchTemplateName, LaunchTemplateId: aws.String(fake.LaunchTemplateID()), Tags: []*ec2.Tag{&ec2.Tag{Key: aws.String("karpenter.k8s.aws/cluster"), Value: aws.String("test-cluster")}}})
 		_, ok := awsEnv.EC2API.LaunchTemplates.Load(launchTemplateName)
 		Expect(ok).To(BeTrue())
-		controllerutil.AddFinalizer(nodeClass, v1beta1.TerminationFinalizer)
+		controllerutil.AddFinalizer(nodeClass, v1.TerminationFinalizer)
 		ExpectApplied(ctx, env.Client, nodeClass)
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 
 		Expect(env.Client.Delete(ctx, nodeClass)).To(Succeed())
 		awsEnv.EC2API.NextError.Set(fmt.Errorf("delete Launch Template Error"))
-		ExpectReconcileFailed(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		_ = ExpectObjectReconcileFailed(ctx, env.Client, terminationController, nodeClass)
 		ExpectExists(ctx, env.Client, nodeClass)
 	})
 	It("should not delete the launch template not associated with the nodeClass", func() {
@@ -127,12 +126,12 @@ var _ = Describe("NodeClass Termination", func() {
 		awsEnv.EC2API.LaunchTemplates.Store(launchTemplateName, &ec2.LaunchTemplate{LaunchTemplateName: launchTemplateName, LaunchTemplateId: aws.String(fake.LaunchTemplateID()), Tags: []*ec2.Tag{&ec2.Tag{Key: aws.String("karpenter.k8s.aws/cluster"), Value: aws.String("test-cluster")}}})
 		_, ok := awsEnv.EC2API.LaunchTemplates.Load(launchTemplateName)
 		Expect(ok).To(BeTrue())
-		controllerutil.AddFinalizer(nodeClass, v1beta1.TerminationFinalizer)
+		controllerutil.AddFinalizer(nodeClass, v1.TerminationFinalizer)
 		ExpectApplied(ctx, env.Client, nodeClass)
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 
 		Expect(env.Client.Delete(ctx, nodeClass)).To(Succeed())
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		_, ok = awsEnv.EC2API.LaunchTemplates.Load(launchTemplateName)
 		Expect(ok).To(BeTrue())
 		ExpectNotFound(ctx, env.Client, nodeClass)
@@ -146,12 +145,12 @@ var _ = Describe("NodeClass Termination", func() {
 		Expect(ok).To(BeTrue())
 		_, ok = awsEnv.EC2API.LaunchTemplates.Load(ltName2)
 		Expect(ok).To(BeTrue())
-		controllerutil.AddFinalizer(nodeClass, v1beta1.TerminationFinalizer)
+		controllerutil.AddFinalizer(nodeClass, v1.TerminationFinalizer)
 		ExpectApplied(ctx, env.Client, nodeClass)
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 
 		Expect(env.Client.Delete(ctx, nodeClass)).To(Succeed())
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		_, ok = awsEnv.EC2API.LaunchTemplates.Load(ltName1)
 		Expect(ok).To(BeFalse())
 		_, ok = awsEnv.EC2API.LaunchTemplates.Load(ltName2)
@@ -170,13 +169,13 @@ var _ = Describe("NodeClass Termination", func() {
 				},
 			},
 		}
-		controllerutil.AddFinalizer(nodeClass, v1beta1.TerminationFinalizer)
+		controllerutil.AddFinalizer(nodeClass, v1.TerminationFinalizer)
 		ExpectApplied(ctx, env.Client, nodeClass)
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(1))
 
 		Expect(env.Client.Delete(ctx, nodeClass)).To(Succeed())
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(0))
 		ExpectNotFound(ctx, env.Client, nodeClass)
 	})
@@ -186,33 +185,35 @@ var _ = Describe("NodeClass Termination", func() {
 				InstanceProfileName: aws.String(profileName),
 			},
 		}
-		controllerutil.AddFinalizer(nodeClass, v1beta1.TerminationFinalizer)
+		controllerutil.AddFinalizer(nodeClass, v1.TerminationFinalizer)
 		ExpectApplied(ctx, env.Client, nodeClass)
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(1))
 
 		Expect(env.Client.Delete(ctx, nodeClass)).To(Succeed())
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(0))
 		ExpectNotFound(ctx, env.Client, nodeClass)
 	})
 	It("should succeed to delete the NodeClass when the instance profile doesn't exist", func() {
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(0))
-		controllerutil.AddFinalizer(nodeClass, v1beta1.TerminationFinalizer)
+		controllerutil.AddFinalizer(nodeClass, v1.TerminationFinalizer)
 		ExpectApplied(ctx, env.Client, nodeClass)
 
 		Expect(env.Client.Delete(ctx, nodeClass)).To(Succeed())
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(0))
 		ExpectNotFound(ctx, env.Client, nodeClass)
 	})
 	It("should not delete the EC2NodeClass until all associated NodeClaims are terminated", func() {
-		var nodeClaims []*corev1beta1.NodeClaim
+		var nodeClaims []*karpv1.NodeClaim
 		for i := 0; i < 2; i++ {
-			nc := coretest.NodeClaim(corev1beta1.NodeClaim{
-				Spec: corev1beta1.NodeClaimSpec{
-					NodeClassRef: &corev1beta1.NodeClassReference{
-						Name: nodeClass.Name,
+			nc := coretest.NodeClaim(karpv1.NodeClaim{
+				Spec: karpv1.NodeClaimSpec{
+					NodeClassRef: &karpv1.NodeClassReference{
+						Group: object.GVK(nodeClass).Group,
+						Kind:  object.GVK(nodeClass).Kind,
+						Name:  nodeClass.Name,
 					},
 				},
 			})
@@ -230,13 +231,13 @@ var _ = Describe("NodeClass Termination", func() {
 				},
 			},
 		}
-		controllerutil.AddFinalizer(nodeClass, v1beta1.TerminationFinalizer)
+		controllerutil.AddFinalizer(nodeClass, v1.TerminationFinalizer)
 		ExpectApplied(ctx, env.Client, nodeClass)
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(1))
 
 		Expect(env.Client.Delete(ctx, nodeClass)).To(Succeed())
-		res := ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		res := ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(res.RequeueAfter).To(Equal(time.Minute * 10))
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(1))
 		ExpectExists(ctx, env.Client, nodeClass)
@@ -244,7 +245,7 @@ var _ = Describe("NodeClass Termination", func() {
 		// Delete one of the NodeClaims
 		// The NodeClass should still not delete
 		ExpectDeleted(ctx, env.Client, nodeClaims[0])
-		res = ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		res = ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(res.RequeueAfter).To(Equal(time.Minute * 10))
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(1))
 		ExpectExists(ctx, env.Client, nodeClass)
@@ -252,7 +253,7 @@ var _ = Describe("NodeClass Termination", func() {
 		// Delete the last NodeClaim
 		// The NodeClass should now delete
 		ExpectDeleted(ctx, env.Client, nodeClaims[1])
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(0))
 		ExpectNotFound(ctx, env.Client, nodeClass)
 	})
@@ -270,13 +271,13 @@ var _ = Describe("NodeClass Termination", func() {
 		}
 		nodeClass.Spec.Role = ""
 		nodeClass.Spec.InstanceProfile = lo.ToPtr("test-instance-profile")
-		controllerutil.AddFinalizer(nodeClass, v1beta1.TerminationFinalizer)
+		controllerutil.AddFinalizer(nodeClass, v1.TerminationFinalizer)
 		ExpectApplied(ctx, env.Client, nodeClass)
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(1))
 
 		Expect(env.Client.Delete(ctx, nodeClass)).To(Succeed())
-		ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(nodeClass))
+		ExpectObjectReconciled(ctx, env.Client, terminationController, nodeClass)
 		Expect(awsEnv.IAMAPI.InstanceProfiles).To(HaveLen(1))
 		ExpectNotFound(ctx, env.Client, nodeClass)
 

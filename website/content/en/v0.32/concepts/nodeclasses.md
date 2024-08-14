@@ -153,7 +153,7 @@ status:
   # Generated instance profile name from "role"
   instanceProfile: "${CLUSTER_NAME}-0123456778901234567789"
 ```
-Refer to the [NodePool docs]({{<ref "./nodepools" >}}) for settings applicable to all providers. To explore various `EC2NodeClass` configurations, refer to the examples provided [in the Karpenter Github repository](https://github.com/aws/karpenter/blob/main/examples/v1beta1/).
+Refer to the [NodePool docs]({{<ref "./nodepools" >}}) for settings applicable to all providers. To explore various `EC2NodeClass` configurations, refer to the examples provided [in the Karpenter Github repository](https://github.com/aws/karpenter/blob/v0.32.0/examples/v1beta1/).
 
 ## spec.amiFamily
 
@@ -395,6 +395,10 @@ spec:
 ## spec.amiSelectorTerms
 
 AMI Selector Terms are used to configure custom AMIs for Karpenter to use, where the AMIs are discovered through ids, owners, name, and [tags](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Using_Tags.html). **When you specify `amiSelectorTerms`, you fully override the default AMIs that are selected on by your EC2NodeClass [`amiFamily`]({{< ref "#specamifamily" >}}).**
+
+{{% alert title="Note" color="primary" %}}
+[`amiFamily`]({{< ref "#specamifamily" >}}) determines the bootstrapping mode, while `amiSelectorTerms` specifies specific AMIs to be used. Therefore, you need to ensure consistency between [`amiFamily`]({{< ref "#specamifamily" >}}) and `amiSelectorTerms` to avoid conflicts during bootstrapping.
+{{% /alert %}}
 
 This selection logic is modeled as terms, where each term contains multiple conditions that must all be satisfied for the selector to match. Effectively, all requirements within a single term are ANDed together. It's possible that you may want to select on two different AMIs that have unrelated requirements. In this case, you can specify multiple terms which will be ORed together to form your selection logic. The example below shows how this selection logic is fulfilled.
 
@@ -666,7 +670,7 @@ spec:
     chown -R ec2-user ~ec2-user/.ssh
 ```
 
-For more examples on configuring fields for different AMI families, see the [examples here](https://github.com/aws/karpenter/blob/main/examples/v1beta1).
+For more examples on configuring fields for different AMI families, see the [examples here](https://github.com/aws/karpenter/blob/v0.32.0/examples/v1beta1/).
 
 Karpenter will merge the userData you specify with the default userData for that AMIFamily. See the [AMIFamily]({{< ref "#specamifamily" >}}) section for more details on these defaults. View the sections below to understand the different merge strategies for each AMIFamily.
 

@@ -21,9 +21,12 @@ import (
 	"time"
 
 	"github.com/samber/lo"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
+	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+
+	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/amifamily"
 )
 
@@ -31,28 +34,37 @@ type AMI struct {
 	amiProvider amifamily.Provider
 }
 
-func (a *AMI) Reconcile(ctx context.Context, nodeClass *v1beta1.EC2NodeClass) (reconcile.Result, error) {
-	amis, err := a.amiProvider.Get(ctx, nodeClass, &amifamily.Options{})
+func (a *AMI) Reconcile(ctx context.Context, nodeClass *v1.EC2NodeClass) (reconcile.Result, error) {
+	if nodeClass.UbuntuIncompatible() {
+		nodeClass.StatusConditions().SetFalse(v1.ConditionTypeAMIsReady, "AMINotFound", "Ubuntu AMI discovery is not supported at v1, refer to the upgrade guide (https://karpenter.sh/docs/upgrading/upgrade-guide/#upgrading-to-100)")
+		return reconcile.Result{}, nil
+	}
+	amis, err := a.amiProvider.List(ctx, nodeClass)
 	if err != nil {
-		return reconcile.Result{}, err
+		return reconcile.Result{}, fmt.Errorf("getting amis, %w", err)
 	}
 	if len(amis) == 0 {
 		nodeClass.Status.AMIs = nil
-		return reconcile.Result{}, fmt.Errorf("no amis exist given constraints")
+		nodeClass.StatusConditions().SetFalse(v1.ConditionTypeAMIsReady, "AMINotFound", "AMISelector did not match any AMIs")
+		return reconcile.Result{}, nil
 	}
-	nodeClass.Status.AMIs = lo.Map(amis, func(ami amifamily.AMI, _ int) v1beta1.AMI {
-		reqs := ami.Requirements.NodeSelectorRequirements()
+	nodeClass.Status.AMIs = lo.Map(amis, func(ami amifamily.AMI, _ int) v1.AMI {
+		reqs := lo.Map(ami.Requirements.NodeSelectorRequirements(), func(item karpv1.NodeSelectorRequirementWithMinValues, _ int) corev1.NodeSelectorRequirement {
+			return item.NodeSelectorRequirement
+		})
+
 		sort.Slice(reqs, func(i, j int) bool {
 			if len(reqs[i].Key) != len(reqs[j].Key) {
 				return len(reqs[i].Key) < len(reqs[j].Key)
 			}
 			return reqs[i].Key < reqs[j].Key
 		})
-		return v1beta1.AMI{
+		return v1.AMI{
 			Name:         ami.Name,
 			ID:           ami.AmiID,
 			Requirements: reqs,
 		}
 	})
+	nodeClass.StatusConditions().SetTrue(v1.ConditionTypeAMIsReady)
 	return reconcile.Result{RequeueAfter: 5 * time.Minute}, nil
 }

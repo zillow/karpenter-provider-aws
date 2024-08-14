@@ -7,7 +7,7 @@ on:
         default: "us-east-2"
       k8s_version:
         type: string
-        default: "1.29"
+        default: "1.30"
       cleanup:
         type: boolean
         required: true
@@ -34,14 +34,13 @@ on:
       k8s_version:
         type: choice
         options:
-          - "1.23"
-          - "1.24"
           - "1.25"
           - "1.26"
           - "1.27"
           - "1.28"
           - "1.29"
-        default: "1.29"
+          - "1.30"
+        default: "1.30"
       cleanup:
         type: boolean
         required: true
@@ -60,6 +59,14 @@ jobs:
       max-parallel: ${{ inputs.parallelism || 100 }}
       matrix:
         suite:
+          - name: IPv6
+            region: ${{ inputs.region }}
+          - name: AMI
+            region: ${{ inputs.region }}
+          - name: Scheduling
+            region: ${{ inputs.region }}
+          - name: Storage
+            region: ${{ inputs.region }}
           - name: Integration
             region: ${{ inputs.region }}
           - name: NodeClaim
@@ -74,7 +81,7 @@ jobs:
             region: ${{ inputs.region }}
           - name: Chaos
             region: ${{ inputs.region }}
-          - name: IPv6
+          - name: Termination
             region: ${{ inputs.region }}
           - name: LocalZone
             # LAX is the only local zone available in the CI account, therefore only use us-west-2
@@ -95,7 +102,7 @@ jobs:
       statuses: write # ./.github/actions/commit-status/start
     uses: ./.github/workflows/e2e-upgrade.yaml
     with:
-      from_git_ref: 283e7b2a51ec73903a6d3f9362fc3009b898ef33
+      from_git_ref: b3076dca62a81caae2d3c4af4fd378c83a901c48
       to_git_ref: ${{ inputs.git_ref }}
       region: ${{ inputs.region }}
       k8s_version: ${{ inputs.k8s_version }}

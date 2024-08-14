@@ -21,22 +21,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/samber/lo"
-	v1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/karpenter/pkg/test/v1alpha1"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/awslabs/operatorpkg/object"
+	"github.com/samber/lo"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/record"
-	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
-	corecloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
+	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/events"
-	"sigs.k8s.io/karpenter/pkg/operator/controller"
-	"sigs.k8s.io/karpenter/pkg/operator/scheme"
 	coretest "sigs.k8s.io/karpenter/pkg/test"
 
 	"github.com/aws/karpenter-provider-aws/pkg/apis"
-	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
+	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
 	"github.com/aws/karpenter-provider-aws/pkg/cloudprovider"
 	"github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclaim/garbagecollection"
 	"github.com/aws/karpenter-provider-aws/pkg/fake"
@@ -45,14 +44,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "knative.dev/pkg/logging/testing"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
+	. "sigs.k8s.io/karpenter/pkg/utils/testing"
 )
 
 var ctx context.Context
 var awsEnv *test.Environment
 var env *coretest.Environment
-var garbageCollectionController controller.Controller
+var garbageCollectionController *garbagecollection.Controller
 var cloudProvider *cloudprovider.CloudProvider
 
 func TestAPIs(t *testing.T) {
@@ -63,10 +62,10 @@ func TestAPIs(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	ctx = options.ToContext(ctx, test.Options())
-	env = coretest.NewEnvironment(scheme.Scheme, coretest.WithCRDs(apis.CRDs...))
+	env = coretest.NewEnvironment(coretest.WithCRDs(apis.CRDs...), coretest.WithCRDs(v1alpha1.CRDs...))
 	awsEnv = test.NewEnvironment(ctx, env)
 	cloudProvider = cloudprovider.New(awsEnv.InstanceTypesProvider, awsEnv.InstanceProvider, events.NewRecorder(&record.FakeRecorder{}),
-		env.Client, awsEnv.AMIProvider, awsEnv.SecurityGroupProvider, awsEnv.SubnetProvider)
+		env.Client, awsEnv.AMIProvider, awsEnv.SecurityGroupProvider)
 	garbageCollectionController = garbagecollection.NewController(env.Client, cloudProvider)
 })
 
@@ -80,19 +79,21 @@ var _ = BeforeEach(func() {
 
 var _ = Describe("GarbageCollection", func() {
 	var instance *ec2.Instance
-	var nodeClass *v1beta1.EC2NodeClass
+	var nodeClass *v1.EC2NodeClass
 	var providerID string
 
 	BeforeEach(func() {
 		instanceID := fake.InstanceID()
 		providerID = fake.ProviderID(instanceID)
 		nodeClass = test.EC2NodeClass()
-		nodePool := coretest.NodePool(corev1beta1.NodePool{
-			Spec: corev1beta1.NodePoolSpec{
-				Template: corev1beta1.NodeClaimTemplate{
-					Spec: corev1beta1.NodeClaimSpec{
-						NodeClassRef: &corev1beta1.NodeClassReference{
-							Name: nodeClass.Name,
+		nodePool := coretest.NodePool(karpv1.NodePool{
+			Spec: karpv1.NodePoolSpec{
+				Template: karpv1.NodeClaimTemplate{
+					Spec: karpv1.NodeClaimTemplateSpec{
+						NodeClassRef: &karpv1.NodeClassReference{
+							Group: object.GVK(nodeClass).Group,
+							Kind:  object.GVK(nodeClass).Kind,
+							Name:  nodeClass.Name,
 						},
 					},
 				},
@@ -108,15 +109,15 @@ var _ = Describe("GarbageCollection", func() {
 					Value: aws.String("owned"),
 				},
 				{
-					Key:   aws.String(corev1beta1.NodePoolLabelKey),
+					Key:   aws.String(karpv1.NodePoolLabelKey),
 					Value: aws.String(nodePool.Name),
 				},
 				{
-					Key:   aws.String(v1beta1.LabelNodeClass),
+					Key:   aws.String(v1.LabelNodeClass),
 					Value: aws.String(nodeClass.Name),
 				},
 				{
-					Key:   aws.String(corev1beta1.ManagedByAnnotationKey),
+					Key:   aws.String(v1.EKSClusterNameTagKey),
 					Value: aws.String(options.FromContext(ctx).ClusterName),
 				},
 			},
@@ -137,10 +138,10 @@ var _ = Describe("GarbageCollection", func() {
 		instance.LaunchTime = aws.Time(time.Now().Add(-time.Minute))
 		awsEnv.EC2API.Instances.Store(aws.StringValue(instance.InstanceId), instance)
 
-		ExpectReconcileSucceeded(ctx, garbageCollectionController, client.ObjectKey{})
+		ExpectSingletonReconciled(ctx, garbageCollectionController)
 		_, err := cloudProvider.Get(ctx, providerID)
 		Expect(err).To(HaveOccurred())
-		Expect(corecloudprovider.IsNodeClaimNotFoundError(err)).To(BeTrue())
+		Expect(karpcloudprovider.IsNodeClaimNotFoundError(err)).To(BeTrue())
 	})
 	It("should delete an instance along with the node if there is no NodeClaim owner (to quicken scheduling)", func() {
 		// Launch time was 1m ago
@@ -152,10 +153,10 @@ var _ = Describe("GarbageCollection", func() {
 		})
 		ExpectApplied(ctx, env.Client, node)
 
-		ExpectReconcileSucceeded(ctx, garbageCollectionController, client.ObjectKey{})
+		ExpectSingletonReconciled(ctx, garbageCollectionController)
 		_, err := cloudProvider.Get(ctx, providerID)
 		Expect(err).To(HaveOccurred())
-		Expect(corecloudprovider.IsNodeClaimNotFoundError(err)).To(BeTrue())
+		Expect(karpcloudprovider.IsNodeClaimNotFoundError(err)).To(BeTrue())
 
 		ExpectNotFound(ctx, env.Client, node)
 	})
@@ -176,15 +177,15 @@ var _ = Describe("GarbageCollection", func() {
 							Value: aws.String("owned"),
 						},
 						{
-							Key:   aws.String(corev1beta1.NodePoolLabelKey),
+							Key:   aws.String(karpv1.NodePoolLabelKey),
 							Value: aws.String("default"),
 						},
 						{
-							Key:   aws.String(v1beta1.LabelNodeClass),
+							Key:   aws.String(v1.LabelNodeClass),
 							Value: aws.String("default"),
 						},
 						{
-							Key:   aws.String(corev1beta1.ManagedByAnnotationKey),
+							Key:   aws.String(v1.EKSClusterNameTagKey),
 							Value: aws.String(options.FromContext(ctx).ClusterName),
 						},
 					},
@@ -200,7 +201,7 @@ var _ = Describe("GarbageCollection", func() {
 			)
 			ids = append(ids, instanceID)
 		}
-		ExpectReconcileSucceeded(ctx, garbageCollectionController, client.ObjectKey{})
+		ExpectSingletonReconciled(ctx, garbageCollectionController)
 
 		wg := sync.WaitGroup{}
 		for _, id := range ids {
@@ -211,7 +212,7 @@ var _ = Describe("GarbageCollection", func() {
 
 				_, err := cloudProvider.Get(ctx, fake.ProviderID(id))
 				Expect(err).To(HaveOccurred())
-				Expect(corecloudprovider.IsNodeClaimNotFoundError(err)).To(BeTrue())
+				Expect(karpcloudprovider.IsNodeClaimNotFoundError(err)).To(BeTrue())
 			}(id)
 		}
 		wg.Wait()
@@ -219,7 +220,7 @@ var _ = Describe("GarbageCollection", func() {
 	It("should not delete all instances if they all have NodeClaim owners", func() {
 		// Generate 100 instances that have different instanceIDs
 		var ids []string
-		var nodeClaims []*corev1beta1.NodeClaim
+		var nodeClaims []*karpv1.NodeClaim
 		for i := 0; i < 100; i++ {
 			instanceID := fake.InstanceID()
 			awsEnv.EC2API.Instances.Store(
@@ -244,13 +245,15 @@ var _ = Describe("GarbageCollection", func() {
 					InstanceType: aws.String("m5.large"),
 				},
 			)
-			nodeClaim := coretest.NodeClaim(corev1beta1.NodeClaim{
-				Spec: corev1beta1.NodeClaimSpec{
-					NodeClassRef: &corev1beta1.NodeClassReference{
-						Name: nodeClass.Name,
+			nodeClaim := coretest.NodeClaim(karpv1.NodeClaim{
+				Spec: karpv1.NodeClaimSpec{
+					NodeClassRef: &karpv1.NodeClassReference{
+						Group: object.GVK(nodeClass).Group,
+						Kind:  object.GVK(nodeClass).Kind,
+						Name:  nodeClass.Name,
 					},
 				},
-				Status: corev1beta1.NodeClaimStatus{
+				Status: karpv1.NodeClaimStatus{
 					ProviderID: fake.ProviderID(instanceID),
 				},
 			})
@@ -258,7 +261,7 @@ var _ = Describe("GarbageCollection", func() {
 			nodeClaims = append(nodeClaims, nodeClaim)
 			ids = append(ids, instanceID)
 		}
-		ExpectReconcileSucceeded(ctx, garbageCollectionController, client.ObjectKey{})
+		ExpectSingletonReconciled(ctx, garbageCollectionController)
 
 		wg := sync.WaitGroup{}
 		for _, id := range ids {
@@ -282,21 +285,21 @@ var _ = Describe("GarbageCollection", func() {
 		instance.LaunchTime = aws.Time(time.Now())
 		awsEnv.EC2API.Instances.Store(aws.StringValue(instance.InstanceId), instance)
 
-		ExpectReconcileSucceeded(ctx, garbageCollectionController, client.ObjectKey{})
+		ExpectSingletonReconciled(ctx, garbageCollectionController)
 		_, err := cloudProvider.Get(ctx, providerID)
 		Expect(err).NotTo(HaveOccurred())
 	})
 	It("should not delete an instance if it was not launched by a NodeClaim", func() {
-		// Remove the "karpenter.sh/managed-by" tag (this isn't launched by a machine)
+		// Remove the "karpenter.sh/nodepool" tag (this isn't launched by a machine)
 		instance.Tags = lo.Reject(instance.Tags, func(t *ec2.Tag, _ int) bool {
-			return aws.StringValue(t.Key) == corev1beta1.ManagedByAnnotationKey
+			return aws.StringValue(t.Key) == karpv1.NodePoolLabelKey
 		})
 
 		// Launch time was 1m ago
 		instance.LaunchTime = aws.Time(time.Now().Add(-time.Minute))
 		awsEnv.EC2API.Instances.Store(aws.StringValue(instance.InstanceId), instance)
 
-		ExpectReconcileSucceeded(ctx, garbageCollectionController, client.ObjectKey{})
+		ExpectSingletonReconciled(ctx, garbageCollectionController)
 		_, err := cloudProvider.Get(ctx, providerID)
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -305,13 +308,15 @@ var _ = Describe("GarbageCollection", func() {
 		instance.LaunchTime = aws.Time(time.Now().Add(-time.Minute))
 		awsEnv.EC2API.Instances.Store(aws.StringValue(instance.InstanceId), instance)
 
-		nodeClaim := coretest.NodeClaim(corev1beta1.NodeClaim{
-			Spec: corev1beta1.NodeClaimSpec{
-				NodeClassRef: &corev1beta1.NodeClassReference{
-					Name: nodeClass.Name,
+		nodeClaim := coretest.NodeClaim(karpv1.NodeClaim{
+			Spec: karpv1.NodeClaimSpec{
+				NodeClassRef: &karpv1.NodeClassReference{
+					Group: object.GVK(nodeClass).Group,
+					Kind:  object.GVK(nodeClass).Kind,
+					Name:  nodeClass.Name,
 				},
 			},
-			Status: corev1beta1.NodeClaimStatus{
+			Status: karpv1.NodeClaimStatus{
 				ProviderID: providerID,
 			},
 		})
@@ -320,7 +325,7 @@ var _ = Describe("GarbageCollection", func() {
 		})
 		ExpectApplied(ctx, env.Client, nodeClaim, node)
 
-		ExpectReconcileSucceeded(ctx, garbageCollectionController, client.ObjectKey{})
+		ExpectSingletonReconciled(ctx, garbageCollectionController)
 		_, err := cloudProvider.Get(ctx, providerID)
 		Expect(err).ToNot(HaveOccurred())
 		ExpectExists(ctx, env.Client, node)
@@ -328,7 +333,7 @@ var _ = Describe("GarbageCollection", func() {
 	It("should not delete many instances or nodes if they already have NodeClaim owners that match it", func() {
 		// Generate 100 instances that have different instanceIDs that have NodeClaims
 		var ids []string
-		var nodes []*v1.Node
+		var nodes []*corev1.Node
 		for i := 0; i < 100; i++ {
 			instanceID := fake.InstanceID()
 			awsEnv.EC2API.Instances.Store(
@@ -343,11 +348,11 @@ var _ = Describe("GarbageCollection", func() {
 							Value: aws.String("owned"),
 						},
 						{
-							Key:   aws.String(corev1beta1.NodePoolLabelKey),
+							Key:   aws.String(karpv1.NodePoolLabelKey),
 							Value: aws.String("default"),
 						},
 						{
-							Key:   aws.String(corev1beta1.ManagedByAnnotationKey),
+							Key:   aws.String(v1.EKSClusterNameTagKey),
 							Value: aws.String(options.FromContext(ctx).ClusterName),
 						},
 					},
@@ -361,13 +366,15 @@ var _ = Describe("GarbageCollection", func() {
 					InstanceType: aws.String("m5.large"),
 				},
 			)
-			nodeClaim := coretest.NodeClaim(corev1beta1.NodeClaim{
-				Spec: corev1beta1.NodeClaimSpec{
-					NodeClassRef: &corev1beta1.NodeClassReference{
-						Name: nodeClass.Name,
+			nodeClaim := coretest.NodeClaim(karpv1.NodeClaim{
+				Spec: karpv1.NodeClaimSpec{
+					NodeClassRef: &karpv1.NodeClassReference{
+						Group: object.GVK(nodeClass).Group,
+						Kind:  object.GVK(nodeClass).Kind,
+						Name:  nodeClass.Name,
 					},
 				},
-				Status: corev1beta1.NodeClaimStatus{
+				Status: karpv1.NodeClaimStatus{
 					ProviderID: fake.ProviderID(instanceID),
 				},
 			})
@@ -378,12 +385,12 @@ var _ = Describe("GarbageCollection", func() {
 			ids = append(ids, instanceID)
 			nodes = append(nodes, node)
 		}
-		ExpectReconcileSucceeded(ctx, garbageCollectionController, client.ObjectKey{})
+		ExpectSingletonReconciled(ctx, garbageCollectionController)
 
 		wg := sync.WaitGroup{}
 		for i := range ids {
 			wg.Add(1)
-			go func(id string, node *v1.Node) {
+			go func(id string, node *corev1.Node) {
 				defer GinkgoRecover()
 				defer wg.Done()
 

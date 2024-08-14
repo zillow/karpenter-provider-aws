@@ -40,29 +40,21 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/env"
 
-	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
-	"sigs.k8s.io/karpenter/pkg/operator/scheme"
+	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 
-	"github.com/aws/karpenter-provider-aws/pkg/apis"
-	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
+	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/sqs"
 	"github.com/aws/karpenter-provider-aws/pkg/test"
 	"github.com/aws/karpenter-provider-aws/test/pkg/environment/common"
 )
 
 func init() {
-	lo.Must0(apis.AddToScheme(scheme.Scheme))
-	corev1beta1.NormalizedLabels = lo.Assign(corev1beta1.NormalizedLabels, map[string]string{"topology.ebs.csi.aws.com/zone": corev1.LabelTopologyZone})
+	karpv1.NormalizedLabels = lo.Assign(karpv1.NormalizedLabels, map[string]string{"topology.ebs.csi.aws.com/zone": corev1.LabelTopologyZone})
 }
 
 var WindowsDefaultImage = "mcr.microsoft.com/oss/kubernetes/pause:3.9"
 
 var EphemeralInitContainerImage = "alpine"
-
-// ExcludedInstanceFamilies denotes instance families that have issues during resource registration due to compatibility
-// issues with versions of the VPR Resource Controller.
-// TODO: jmdeal@ remove a1 from exclusion list once Karpenter implicitly filters a1 instances for AL2023 AMI family (incompatible)
-var ExcludedInstanceFamilies = []string{"m7a", "r7a", "c7a", "r7i", "a1"}
 
 type Environment struct {
 	*common.Environment
@@ -82,6 +74,13 @@ type Environment struct {
 	ClusterEndpoint   string
 	InterruptionQueue string
 	PrivateCluster    bool
+	ZoneInfo          []ZoneInfo
+}
+
+type ZoneInfo struct {
+	Zone     string
+	ZoneID   string
+	ZoneType string
 }
 
 func NewEnvironment(t *testing.T) *Environment {
@@ -123,6 +122,14 @@ func NewEnvironment(t *testing.T) *Environment {
 		out := lo.Must(sqsapi.GetQueueUrlWithContext(env.Context, &servicesqs.GetQueueUrlInput{QueueName: aws.String(v)}))
 		awsEnv.SQSProvider = lo.Must(sqs.NewDefaultProvider(sqsapi, lo.FromPtr(out.QueueUrl)))
 	}
+	// Populate ZoneInfo for all AZs in the region
+	awsEnv.ZoneInfo = lo.Map(lo.Must(awsEnv.EC2API.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{})).AvailabilityZones, func(zone *ec2.AvailabilityZone, _ int) ZoneInfo {
+		return ZoneInfo{
+			Zone:     lo.FromPtr(zone.ZoneName),
+			ZoneID:   lo.FromPtr(zone.ZoneId),
+			ZoneType: lo.FromPtr(zone.ZoneType),
+		}
+	})
 	return awsEnv
 }
 
@@ -134,18 +141,18 @@ func GetTimeStreamAPI(session *session.Session) timestreamwriteiface.TimestreamW
 	return &NoOpTimeStreamAPI{}
 }
 
-func (env *Environment) DefaultEC2NodeClass() *v1beta1.EC2NodeClass {
+func (env *Environment) DefaultEC2NodeClass() *v1.EC2NodeClass {
 	nodeClass := test.EC2NodeClass()
-	nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyAL2023
+	nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{Alias: "al2023@latest"}}
 	nodeClass.Spec.Tags = map[string]string{
 		"testing/cluster": env.ClusterName,
 	}
-	nodeClass.Spec.SecurityGroupSelectorTerms = []v1beta1.SecurityGroupSelectorTerm{
+	nodeClass.Spec.SecurityGroupSelectorTerms = []v1.SecurityGroupSelectorTerm{
 		{
 			Tags: map[string]string{"karpenter.sh/discovery": env.ClusterName},
 		},
 	}
-	nodeClass.Spec.SubnetSelectorTerms = []v1beta1.SubnetSelectorTerm{
+	nodeClass.Spec.SubnetSelectorTerms = []v1.SubnetSelectorTerm{
 		{
 			Tags: map[string]string{"karpenter.sh/discovery": env.ClusterName},
 		},

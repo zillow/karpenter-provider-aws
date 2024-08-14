@@ -23,12 +23,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/samber/lo"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 
-	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
+	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	coretest "sigs.k8s.io/karpenter/pkg/test"
 
-	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
+	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
 	awserrors "github.com/aws/karpenter-provider-aws/pkg/errors"
 	"github.com/aws/karpenter-provider-aws/pkg/utils"
 	environmentaws "github.com/aws/karpenter-provider-aws/test/pkg/environment/aws"
@@ -45,11 +45,11 @@ var _ = Describe("GarbageCollection", func() {
 
 	BeforeEach(func() {
 		securityGroups := env.GetSecurityGroups(map[string]string{"karpenter.sh/discovery": env.ClusterName})
-		subnets := env.GetSubnetNameAndIds(map[string]string{"karpenter.sh/discovery": env.ClusterName})
+		subnets := env.GetSubnetInfo(map[string]string{"karpenter.sh/discovery": env.ClusterName})
 		Expect(securityGroups).ToNot(HaveLen(0))
 		Expect(subnets).ToNot(HaveLen(0))
 
-		customAMI = env.GetCustomAMI("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended/image_id", 1)
+		customAMI = env.GetAMIBySSMPath(fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended/image_id", env.K8sVersion()))
 		instanceProfileName = fmt.Sprintf("KarpenterNodeInstanceProfile-%s", env.ClusterName)
 		roleName = fmt.Sprintf("KarpenterNodeRole-%s", env.ClusterName)
 		instanceInput = &ec2.RunInstancesInput{
@@ -82,11 +82,11 @@ var _ = Describe("GarbageCollection", func() {
 							Value: aws.String("owned"),
 						},
 						{
-							Key:   aws.String(corev1beta1.NodePoolLabelKey),
+							Key:   aws.String(karpv1.NodePoolLabelKey),
 							Value: aws.String(nodePool.Name),
 						},
 						{
-							Key:   aws.String(v1beta1.LabelNodeClass),
+							Key:   aws.String(v1.LabelNodeClass),
 							Value: aws.String(nodeClass.Name),
 						},
 					},
@@ -98,10 +98,10 @@ var _ = Describe("GarbageCollection", func() {
 	})
 	It("should succeed to garbage collect an Instance that was launched by a NodeClaim but has no Instance mapping", func() {
 		// Update the userData for the instance input with the correct NodePool
-		rawContent, err := os.ReadFile("testdata/al2_userdata_input.sh")
+		rawContent, err := os.ReadFile("testdata/al2023_userdata_input.yaml")
 		Expect(err).ToNot(HaveOccurred())
 		instanceInput.UserData = lo.ToPtr(base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(string(rawContent), env.ClusterName,
-			env.ClusterEndpoint, env.ExpectCABundle(), nodePool.Name))))
+			env.ClusterEndpoint, env.ExpectCABundle()))))
 
 		env.ExpectInstanceProfileCreated(instanceProfileName, roleName)
 		DeferCleanup(func() {
@@ -125,12 +125,12 @@ var _ = Describe("GarbageCollection", func() {
 		// Wait for the node to register with the cluster
 		node := env.EventuallyExpectCreatedNodeCount("==", 1)[0]
 
-		// Update the tags to add the karpenter.sh/managed-by tag
+		// Update the tags to add the EKSClusterNameTagKey tag
 		_, err = env.EC2API.CreateTagsWithContext(env.Context, &ec2.CreateTagsInput{
 			Resources: []*string{out.Instances[0].InstanceId},
 			Tags: []*ec2.Tag{
 				{
-					Key:   aws.String(corev1beta1.ManagedByAnnotationKey),
+					Key:   aws.String(v1.EKSClusterNameTagKey),
 					Value: aws.String(env.ClusterName),
 				},
 			},
@@ -140,12 +140,12 @@ var _ = Describe("GarbageCollection", func() {
 		// Eventually expect the node and the instance to be removed (shutting-down)
 		env.EventuallyExpectNotFound(node)
 		Eventually(func(g Gomega) {
-			g.Expect(lo.FromPtr(env.GetInstanceByID(aws.StringValue(out.Instances[0].InstanceId)).State.Name)).To(Equal("shutting-down"))
+			g.Expect(lo.FromPtr(env.GetInstanceByID(aws.StringValue(out.Instances[0].InstanceId)).State.Name)).To(BeElementOf("terminated", "shutting-down"))
 		}, time.Second*10).Should(Succeed())
 	})
 	It("should succeed to garbage collect an Instance that was deleted without the cluster's knowledge", func() {
 		// Disable the interruption queue for the garbage collection coretest
-		env.ExpectSettingsOverridden(v1.EnvVar{Name: "INTERRUPTION_QUEUE", Value: ""})
+		env.ExpectSettingsOverridden(corev1.EnvVar{Name: "INTERRUPTION_QUEUE", Value: ""})
 
 		pod := coretest.Pod()
 		env.ExpectCreated(nodeClass, nodePool, pod)

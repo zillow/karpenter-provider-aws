@@ -16,16 +16,14 @@ package integration_test
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/samber/lo"
-	v1 "k8s.io/api/core/v1"
-	"knative.dev/pkg/ptr"
+	corev1 "k8s.io/api/core/v1"
 
-	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
+	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	coretest "sigs.k8s.io/karpenter/pkg/test"
 
-	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
+	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -35,7 +33,7 @@ var _ = Describe("Validation", func() {
 	Context("NodePool", func() {
 		It("should error when a restricted label is used in labels (karpenter.sh/nodepool)", func() {
 			nodePool.Spec.Template.Labels = map[string]string{
-				corev1beta1.NodePoolLabelKey: "my-custom-nodepool",
+				karpv1.NodePoolLabelKey: "my-custom-nodepool",
 			}
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
@@ -47,93 +45,76 @@ var _ = Describe("Validation", func() {
 		})
 		It("should allow a restricted label exception to be used in labels (node-restriction.kubernetes.io/custom-label)", func() {
 			nodePool.Spec.Template.Labels = map[string]string{
-				v1.LabelNamespaceNodeRestriction + "/custom-label": "custom-value",
+				corev1.LabelNamespaceNodeRestriction + "/custom-label": "custom-value",
 			}
 			Expect(env.Client.Create(env.Context, nodePool)).To(Succeed())
 		})
 		It("should allow a restricted label exception to be used in labels ([*].node-restriction.kubernetes.io/custom-label)", func() {
 			nodePool.Spec.Template.Labels = map[string]string{
-				"subdomain" + v1.LabelNamespaceNodeRestriction + "/custom-label": "custom-value",
+				"subdomain" + corev1.LabelNamespaceNodeRestriction + "/custom-label": "custom-value",
 			}
 			Expect(env.Client.Create(env.Context, nodePool)).To(Succeed())
 		})
 		It("should error when a requirement references a restricted label (karpenter.sh/nodepool)", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      corev1beta1.NodePoolLabelKey,
-					Operator: v1.NodeSelectorOpIn,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      karpv1.NodePoolLabelKey,
+					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"default"},
 				}})
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
 		It("should error when a requirement uses In but has no values", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      v1.LabelInstanceTypeStable,
-					Operator: v1.NodeSelectorOpIn,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      corev1.LabelInstanceTypeStable,
+					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{},
 				}})
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
 		It("should error when a requirement uses an unknown operator", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      corev1beta1.CapacityTypeLabelKey,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      karpv1.CapacityTypeLabelKey,
 					Operator: "within",
-					Values:   []string{corev1beta1.CapacityTypeSpot},
+					Values:   []string{karpv1.CapacityTypeSpot},
 				}})
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
 		It("should error when Gt is used with multiple integer values", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceMemory,
-					Operator: v1.NodeSelectorOpGt,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      v1.LabelInstanceMemory,
+					Operator: corev1.NodeSelectorOpGt,
 					Values:   []string{"1000000", "2000000"},
 				}})
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
 		It("should error when Lt is used with multiple integer values", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      v1beta1.LabelInstanceMemory,
-					Operator: v1.NodeSelectorOpLt,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      v1.LabelInstanceMemory,
+					Operator: corev1.NodeSelectorOpLt,
 					Values:   []string{"1000000", "2000000"},
 				}})
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
-		It("should error when ttlSecondAfterEmpty is negative", func() {
-			nodePool.Spec.Disruption.ConsolidationPolicy = corev1beta1.ConsolidationPolicyWhenEmpty
-			nodePool.Spec.Disruption.ConsolidateAfter = &corev1beta1.NillableDuration{Duration: lo.ToPtr(-time.Second)}
+		It("should error when consolidateAfter is negative", func() {
+			nodePool.Spec.Disruption.ConsolidationPolicy = karpv1.ConsolidationPolicyWhenEmpty
+			nodePool.Spec.Disruption.ConsolidateAfter = karpv1.MustParseNillableDuration("-1s")
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
-		It("should error when ConsolidationPolicy=WhenUnderutilized is used with consolidateAfter", func() {
-			nodePool.Spec.Disruption.ConsolidationPolicy = corev1beta1.ConsolidationPolicyWhenUnderutilized
-			nodePool.Spec.Disruption.ConsolidateAfter = &corev1beta1.NillableDuration{Duration: lo.ToPtr(time.Minute)}
-			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
-		})
-		It("should error if imageGCHighThresholdPercent is less than imageGCLowThresholdPercent", func() {
-			nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-				ImageGCHighThresholdPercent: ptr.Int32(10),
-				ImageGCLowThresholdPercent:  ptr.Int32(60),
-			}
-			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
-		})
-		It("should error if imageGCHighThresholdPercent or imageGCLowThresholdPercent is negative", func() {
-			nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-				ImageGCHighThresholdPercent: ptr.Int32(-10),
-			}
-			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
-			nodePool.Spec.Template.Spec.Kubelet = &corev1beta1.KubeletConfiguration{
-				ImageGCLowThresholdPercent: ptr.Int32(-10),
-			}
-			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
+		It("should succeed when ConsolidationPolicy=WhenEmptyOrUnderutilized is used with consolidateAfter", func() {
+			nodePool.Spec.Disruption.ConsolidationPolicy = karpv1.ConsolidationPolicyWhenEmptyOrUnderutilized
+			nodePool.Spec.Disruption.ConsolidateAfter = karpv1.MustParseNillableDuration("1m")
+			Expect(env.Client.Create(env.Context, nodePool)).To(Succeed())
 		})
 		It("should error when minValues for a requirement key is negative", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      v1.LabelInstanceTypeStable,
-					Operator: v1.NodeSelectorOpIn,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      corev1.LabelInstanceTypeStable,
+					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"insance-type-1", "insance-type-2"},
 				},
 				MinValues: lo.ToPtr(-1)},
@@ -141,10 +122,10 @@ var _ = Describe("Validation", func() {
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
 		It("should error when minValues for a requirement key is zero", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      v1.LabelInstanceTypeStable,
-					Operator: v1.NodeSelectorOpIn,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      corev1.LabelInstanceTypeStable,
+					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"insance-type-1", "insance-type-2"},
 				},
 				MinValues: lo.ToPtr(0)},
@@ -152,10 +133,10 @@ var _ = Describe("Validation", func() {
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
 		It("should error when minValues for a requirement key is more than 50", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      v1.LabelInstanceTypeStable,
-					Operator: v1.NodeSelectorOpIn,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      corev1.LabelInstanceTypeStable,
+					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"insance-type-1", "insance-type-2"},
 				},
 				MinValues: lo.ToPtr(51)},
@@ -163,10 +144,10 @@ var _ = Describe("Validation", func() {
 			Expect(env.Client.Create(env.Context, nodePool)).ToNot(Succeed())
 		})
 		It("should error when minValues for a requirement key is greater than the values specified within In operator", func() {
-			nodePool = coretest.ReplaceRequirements(nodePool, corev1beta1.NodeSelectorRequirementWithMinValues{
-				NodeSelectorRequirement: v1.NodeSelectorRequirement{
-					Key:      v1.LabelInstanceTypeStable,
-					Operator: v1.NodeSelectorOpIn,
+			nodePool = coretest.ReplaceRequirements(nodePool, karpv1.NodeSelectorRequirementWithMinValues{
+				NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+					Key:      corev1.LabelInstanceTypeStable,
+					Operator: corev1.NodeSelectorOpIn,
 					Values:   []string{"insance-type-1", "insance-type-2"},
 				},
 				MinValues: lo.ToPtr(3)},
@@ -175,12 +156,14 @@ var _ = Describe("Validation", func() {
 		})
 	})
 	Context("EC2NodeClass", func() {
-		It("should error when amiSelectorTerms are not defined for amiFamily Custom", func() {
-			nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyCustom
+		It("should error when amiSelectorTerms are not defined", func() {
+			nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2023)
+			nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{}
 			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
 		})
 		It("should fail for poorly formatted AMI ids", func() {
-			nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{
+			nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2023)
+			nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{
 				{
 					ID: "must-start-with-ami",
 				},
@@ -195,7 +178,7 @@ var _ = Describe("Validation", func() {
 			nodeClass.Spec.Tags = map[string]string{"karpenter.sh/nodepool": "custom-value"}
 			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
 
-			nodeClass.Spec.Tags = map[string]string{"karpenter.sh/managed-by": env.ClusterName}
+			nodeClass.Spec.Tags = map[string]string{v1.EKSClusterNameTagKey: env.ClusterName}
 			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
 
 			nodeClass.Spec.Tags = map[string]string{fmt.Sprintf("kubernetes.io/cluster/%s", env.ClusterName): "owned"}
@@ -208,7 +191,7 @@ var _ = Describe("Validation", func() {
 			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
 		})
 		It("should fail when securityGroupSelectorTerms has id and other filters", func() {
-			nodeClass.Spec.SecurityGroupSelectorTerms = []v1beta1.SecurityGroupSelectorTerm{
+			nodeClass.Spec.SecurityGroupSelectorTerms = []v1.SecurityGroupSelectorTerm{
 				{
 					Tags: map[string]string{"karpenter.sh/discovery": env.ClusterName},
 					ID:   "sg-12345",
@@ -217,7 +200,7 @@ var _ = Describe("Validation", func() {
 			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
 		})
 		It("should fail when subnetSelectorTerms has id and other filters", func() {
-			nodeClass.Spec.SubnetSelectorTerms = []v1beta1.SubnetSelectorTerm{
+			nodeClass.Spec.SubnetSelectorTerms = []v1.SubnetSelectorTerm{
 				{
 					Tags: map[string]string{"karpenter.sh/discovery": env.ClusterName},
 					ID:   "subnet-12345",
@@ -226,7 +209,8 @@ var _ = Describe("Validation", func() {
 			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
 		})
 		It("should fail when amiSelectorTerms has id and other filters", func() {
-			nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{
+			nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2023)
+			nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{
 				{
 					Tags: map[string]string{"karpenter.sh/discovery": env.ClusterName},
 					ID:   "ami-12345",
@@ -254,6 +238,12 @@ var _ = Describe("Validation", func() {
 			Expect(env.Client.Update(env.Context, nodeClass)).ToNot(Succeed())
 		})
 		It("should fail to switch between a managed and unmanaged instance profile", func() {
+			// Skipping this test for private cluster because there is no VPC private endpoint for the IAM API. As a result,
+			// you cannot use the default spec.role field in your EC2NodeClass. Instead, you need to provision and manage an
+			// instance profile manually and then specify Karpenter to use this instance profile through the spec.instanceProfile field.
+			if env.PrivateCluster {
+				Skip("skipping Unmanaged instance profile test for private cluster")
+			}
 			nodeClass.Spec.Role = "test-role"
 			nodeClass.Spec.InstanceProfile = nil
 			Expect(env.Client.Create(env.Context, nodeClass)).To(Succeed())
@@ -261,6 +251,23 @@ var _ = Describe("Validation", func() {
 			nodeClass.Spec.Role = ""
 			nodeClass.Spec.InstanceProfile = lo.ToPtr("test-instance-profile")
 			Expect(env.Client.Update(env.Context, nodeClass)).ToNot(Succeed())
+		})
+		It("should error if imageGCHighThresholdPercent is less than imageGCLowThresholdPercent", func() {
+			nodeClass.Spec.Kubelet = &v1.KubeletConfiguration{
+				ImageGCHighThresholdPercent: lo.ToPtr(int32(10)),
+				ImageGCLowThresholdPercent:  lo.ToPtr(int32(60)),
+			}
+			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
+		})
+		It("should error if imageGCHighThresholdPercent or imageGCLowThresholdPercent is negative", func() {
+			nodeClass.Spec.Kubelet = &v1.KubeletConfiguration{
+				ImageGCHighThresholdPercent: lo.ToPtr(int32(-10)),
+			}
+			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
+			nodeClass.Spec.Kubelet = &v1.KubeletConfiguration{
+				ImageGCLowThresholdPercent: lo.ToPtr(int32(-10)),
+			}
+			Expect(env.Client.Create(env.Context, nodeClass)).ToNot(Succeed())
 		})
 	})
 })

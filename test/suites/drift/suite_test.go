@@ -17,14 +17,18 @@ package drift_test
 import (
 	"fmt"
 	"sort"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
+	awssdk "github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/awslabs/operatorpkg/object"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
 	appsv1 "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -32,29 +36,20 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	coretest "sigs.k8s.io/karpenter/pkg/test"
 	"sigs.k8s.io/karpenter/pkg/utils/resources"
 
-	awssdk "github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/eks"
-	"github.com/aws/aws-sdk-go/service/ssm"
-
-	corev1beta1 "sigs.k8s.io/karpenter/pkg/apis/v1beta1"
-	coretest "sigs.k8s.io/karpenter/pkg/test"
-
-	"github.com/aws/karpenter-provider-aws/pkg/apis/v1beta1"
+	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
 	"github.com/aws/karpenter-provider-aws/pkg/test"
 	"github.com/aws/karpenter-provider-aws/test/pkg/environment/aws"
 	"github.com/aws/karpenter-provider-aws/test/pkg/environment/common"
-
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 )
 
 var env *aws.Environment
 var amdAMI string
-var nodeClass *v1beta1.EC2NodeClass
-var nodePool *corev1beta1.NodePool
+var nodeClass *v1.EC2NodeClass
+var nodePool *karpv1.NodePool
 
 func TestDrift(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -80,7 +75,7 @@ var _ = Describe("Drift", func() {
 	var selector labels.Selector
 	var numPods int
 	BeforeEach(func() {
-		amdAMI = env.GetCustomAMI("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended/image_id", 1)
+		amdAMI = env.GetAMIBySSMPath(fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended/image_id", env.K8sVersion()))
 		numPods = 1
 		// Add pods with a do-not-disrupt annotation so that we can check node metadata before we disrupt
 		dep = coretest.Deployment(coretest.DeploymentOptions{
@@ -91,7 +86,7 @@ var _ = Describe("Drift", func() {
 						"app": "my-app",
 					},
 					Annotations: map[string]string{
-						corev1beta1.DoNotDisruptAnnotationKey: "true",
+						karpv1.DoNotDisruptAnnotationKey: "true",
 					},
 				},
 				TerminationGracePeriodSeconds: lo.ToPtr[int64](0),
@@ -102,16 +97,16 @@ var _ = Describe("Drift", func() {
 	Context("Budgets", func() {
 		It("should respect budgets for empty drift", func() {
 			nodePool = coretest.ReplaceRequirements(nodePool,
-				corev1beta1.NodeSelectorRequirementWithMinValues{
-					NodeSelectorRequirement: v1.NodeSelectorRequirement{
-						Key:      v1beta1.LabelInstanceSize,
-						Operator: v1.NodeSelectorOpIn,
+				karpv1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+						Key:      v1.LabelInstanceSize,
+						Operator: corev1.NodeSelectorOpIn,
 						Values:   []string{"2xlarge"},
 					},
 				},
 			)
 			// We're expecting to create 3 nodes, so we'll expect to see 2 nodes deleting at one time.
-			nodePool.Spec.Disruption.Budgets = []corev1beta1.Budget{{
+			nodePool.Spec.Disruption.Budgets = []karpv1.Budget{{
 				Nodes: "50%",
 			}}
 			var numPods int32 = 6
@@ -120,14 +115,14 @@ var _ = Describe("Drift", func() {
 				PodOptions: coretest.PodOptions{
 					ObjectMeta: metav1.ObjectMeta{
 						Annotations: map[string]string{
-							corev1beta1.DoNotDisruptAnnotationKey: "true",
+							karpv1.DoNotDisruptAnnotationKey: "true",
 						},
 						Labels: map[string]string{"app": "large-app"},
 					},
 					// Each 2xlarge has 8 cpu, so each node should fit 2 pods.
-					ResourceRequirements: v1.ResourceRequirements{
-						Requests: v1.ResourceList{
-							v1.ResourceCPU: resource.MustParse("3"),
+					ResourceRequirements: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("3"),
 						},
 					},
 				},
@@ -179,16 +174,16 @@ var _ = Describe("Drift", func() {
 		})
 		It("should respect budgets for non-empty delete drift", func() {
 			nodePool = coretest.ReplaceRequirements(nodePool,
-				corev1beta1.NodeSelectorRequirementWithMinValues{
-					NodeSelectorRequirement: v1.NodeSelectorRequirement{
-						Key:      v1beta1.LabelInstanceSize,
-						Operator: v1.NodeSelectorOpIn,
+				karpv1.NodeSelectorRequirementWithMinValues{
+					NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+						Key:      v1.LabelInstanceSize,
+						Operator: corev1.NodeSelectorOpIn,
 						Values:   []string{"2xlarge"},
 					},
 				},
 			)
 			// We're expecting to create 3 nodes, so we'll expect to see at most 2 nodes deleting at one time.
-			nodePool.Spec.Disruption.Budgets = []corev1beta1.Budget{{
+			nodePool.Spec.Disruption.Budgets = []karpv1.Budget{{
 				Nodes: "50%",
 			}}
 			var numPods int32 = 9
@@ -197,14 +192,14 @@ var _ = Describe("Drift", func() {
 				PodOptions: coretest.PodOptions{
 					ObjectMeta: metav1.ObjectMeta{
 						Annotations: map[string]string{
-							corev1beta1.DoNotDisruptAnnotationKey: "true",
+							karpv1.DoNotDisruptAnnotationKey: "true",
 						},
 						Labels: map[string]string{"app": "large-app"},
 					},
 					// Each 2xlarge has 8 cpu, so each node should fit no more than 3 pods.
-					ResourceRequirements: v1.ResourceRequirements{
-						Requests: v1.ResourceList{
-							v1.ResourceCPU: resource.MustParse("2100m"),
+					ResourceRequirements: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("2100m"),
 						},
 					},
 				},
@@ -245,7 +240,7 @@ var _ = Describe("Drift", func() {
 			pods := env.EventuallyExpectHealthyPodCount(selector, 3)
 			// Remove the do-not-disrupt annotation so that the nodes are now disruptable
 			for _, pod := range pods {
-				delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+				delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 				env.ExpectUpdated(pod)
 			}
 
@@ -263,56 +258,34 @@ var _ = Describe("Drift", func() {
 		})
 		It("should respect budgets for non-empty replace drift", func() {
 			appLabels := map[string]string{"app": "large-app"}
-
-			nodePool = coretest.ReplaceRequirements(nodePool,
-				corev1beta1.NodeSelectorRequirementWithMinValues{
-					NodeSelectorRequirement: v1.NodeSelectorRequirement{
-						Key:      v1beta1.LabelInstanceSize,
-						Operator: v1.NodeSelectorOpIn,
-						Values:   []string{"xlarge"},
-					},
-				},
-				// Add an Exists operator so that we can select on a fake partition later
-				corev1beta1.NodeSelectorRequirementWithMinValues{
-					NodeSelectorRequirement: v1.NodeSelectorRequirement{
-						Key:      "test-partition",
-						Operator: v1.NodeSelectorOpExists,
-					},
-				},
-			)
 			nodePool.Labels = appLabels
 			// We're expecting to create 5 nodes, so we'll expect to see at most 3 nodes deleting at one time.
-			nodePool.Spec.Disruption.Budgets = []corev1beta1.Budget{{
+			nodePool.Spec.Disruption.Budgets = []karpv1.Budget{{
 				Nodes: "3",
 			}}
 
-			// Make 5 pods all with different deployments and different test partitions, so that each pod can be put
-			// on a separate node.
-			selector = labels.SelectorFromSet(appLabels)
+			// Create a 5 pod deployment with hostname inter-pod anti-affinity to ensure each pod is placed on a unique node
 			numPods = 5
-			deployments := make([]*appsv1.Deployment, numPods)
-			for i := range lo.Range(numPods) {
-				deployments[i] = coretest.Deployment(coretest.DeploymentOptions{
-					Replicas: 1,
-					PodOptions: coretest.PodOptions{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: appLabels,
-						},
-						NodeSelector: map[string]string{"test-partition": fmt.Sprintf("%d", i)},
-						// Each xlarge has 4 cpu, so each node should fit no more than 1 pod.
-						ResourceRequirements: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceCPU: resource.MustParse("3"),
-							},
-						},
+			selector = labels.SelectorFromSet(appLabels)
+			deployment := coretest.Deployment(coretest.DeploymentOptions{
+				Replicas: int32(numPods),
+				PodOptions: coretest.PodOptions{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: appLabels,
 					},
-				})
-			}
+					PodAntiRequirements: []corev1.PodAffinityTerm{{
+						TopologyKey: corev1.LabelHostname,
+						LabelSelector: &metav1.LabelSelector{
+							MatchLabels: appLabels,
+						},
+					}},
+				},
+			})
 
-			env.ExpectCreated(nodeClass, nodePool, deployments[0], deployments[1], deployments[2], deployments[3], deployments[4])
+			env.ExpectCreated(nodeClass, nodePool, deployment)
 
-			originalNodeClaims := env.EventuallyExpectCreatedNodeClaimCount("==", 5)
-			originalNodes := env.EventuallyExpectCreatedNodeCount("==", 5)
+			originalNodeClaims := env.EventuallyExpectCreatedNodeClaimCount("==", numPods)
+			originalNodes := env.EventuallyExpectCreatedNodeCount("==", numPods)
 
 			// Check that all deployment pods are online
 			env.EventuallyExpectHealthyPodCount(selector, numPods)
@@ -342,14 +315,14 @@ var _ = Describe("Drift", func() {
 			// Eventually expect all the nodes to be rolled and completely removed
 			// Since this completes the disruption operation, this also ensures that we aren't leaking nodes into subsequent
 			// tests since nodeclaims that are actively replacing but haven't brought-up nodes yet can register nodes later
-			env.EventuallyExpectNotFound(lo.Map(originalNodes, func(n *v1.Node, _ int) client.Object { return n })...)
-			env.EventuallyExpectNotFound(lo.Map(originalNodeClaims, func(n *corev1beta1.NodeClaim, _ int) client.Object { return n })...)
+			env.EventuallyExpectNotFound(lo.Map(originalNodes, func(n *corev1.Node, _ int) client.Object { return n })...)
+			env.EventuallyExpectNotFound(lo.Map(originalNodeClaims, func(n *karpv1.NodeClaim, _ int) client.Object { return n })...)
 			env.ExpectNodeClaimCount("==", 5)
 			env.ExpectNodeCount("==", 5)
 		})
 		It("should not allow drift if the budget is fully blocking", func() {
 			// We're going to define a budget that doesn't allow any drift to happen
-			nodePool.Spec.Disruption.Budgets = []corev1beta1.Budget{{
+			nodePool.Spec.Disruption.Budgets = []karpv1.Budget{{
 				Nodes: "0",
 			}}
 
@@ -374,7 +347,7 @@ var _ = Describe("Drift", func() {
 			// the current time and extends 15 minutes past the current time
 			// Times need to be in UTC since the karpenter containers were built in UTC time
 			windowStart := time.Now().Add(-time.Minute * 15).UTC()
-			nodePool.Spec.Disruption.Budgets = []corev1beta1.Budget{{
+			nodePool.Spec.Disruption.Budgets = []karpv1.Budget{{
 				Nodes:    "0",
 				Schedule: lo.ToPtr(fmt.Sprintf("%d %d * * *", windowStart.Minute(), windowStart.Hour())),
 				Duration: &metav1.Duration{Duration: time.Minute * 30},
@@ -397,16 +370,9 @@ var _ = Describe("Drift", func() {
 		})
 	})
 	It("should disrupt nodes that have drifted due to AMIs", func() {
-		// Choose and old, static image. The 1.23 image is incompatible with EKS 1.29 so fallback to a newer image.
-		parameterName := lo.Ternary(lo.Must(strconv.Atoi(strings.Split(env.GetK8sVersion(0), ".")[1])) >= 29,
-			"/aws/service/eks/optimized-ami/1.27/amazon-linux-2023/x86_64/standard/amazon-eks-node-al2023-x86_64-standard-1.27-v20240307/image_id",
-			"/aws/service/eks/optimized-ami/1.23/amazon-linux-2023/arm64/standard/amazon-eks-node-al2023-arm64-standard-1.23-v20240307/image_id",
-		)
-		parameter, err := env.SSMAPI.GetParameter(&ssm.GetParameterInput{Name: awssdk.String(parameterName)})
-		Expect(err).To(BeNil())
-		oldCustomAMI := *parameter.Parameter.Value
-		nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyAL2023
-		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{{ID: oldCustomAMI}}
+		oldCustomAMI := env.GetAMIBySSMPath(fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended/image_id", env.K8sVersionWithOffset(1)))
+		nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2023)
+		nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: oldCustomAMI}}
 
 		env.ExpectCreated(dep, nodeClass, nodePool)
 		pod := env.EventuallyExpectHealthyPodCount(selector, numPods)[0]
@@ -414,25 +380,20 @@ var _ = Describe("Drift", func() {
 
 		nodeClaim := env.EventuallyExpectCreatedNodeClaimCount("==", 1)[0]
 		node := env.EventuallyExpectNodeCount("==", 1)[0]
-		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{{ID: amdAMI}}
+		nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: amdAMI}}
 		env.ExpectCreatedOrUpdated(nodeClass)
 
 		env.EventuallyExpectDrifted(nodeClaim)
 
-		delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+		delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 		env.ExpectUpdated(pod)
 		env.EventuallyExpectNotFound(pod, nodeClaim, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 	})
 	It("should return drifted if the AMI no longer matches the existing NodeClaims instance type", func() {
-		version := env.GetK8sVersion(1)
-		armParameter, err := env.SSMAPI.GetParameter(&ssm.GetParameterInput{
-			Name: awssdk.String(fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended/image_id", version)),
-		})
-		Expect(err).To(BeNil())
-		armAMI := *armParameter.Parameter.Value
-		nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyAL2023
-		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{{ID: armAMI}}
+		armAMI := env.GetAMIBySSMPath(fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended/image_id", env.K8sVersion()))
+		nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2023)
+		nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: armAMI}}
 
 		env.ExpectCreated(dep, nodeClass, nodePool)
 		pod := env.EventuallyExpectHealthyPodCount(selector, numPods)[0]
@@ -440,43 +401,34 @@ var _ = Describe("Drift", func() {
 
 		nodeClaim := env.EventuallyExpectCreatedNodeClaimCount("==", 1)[0]
 		node := env.EventuallyExpectNodeCount("==", 1)[0]
-		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{{ID: amdAMI}}
+		nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: amdAMI}}
 		env.ExpectCreatedOrUpdated(nodeClass)
 
 		env.EventuallyExpectDrifted(nodeClaim)
 
-		delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+		delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 		env.ExpectUpdated(pod)
 		env.EventuallyExpectNotFound(pod, nodeClaim, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 	})
 	It("should not disrupt nodes that have drifted without the featureGate enabled", func() {
-		version := env.GetK8sVersion(1)
-		env.ExpectSettingsOverridden(v1.EnvVar{Name: "FEATURE_GATES", Value: "Drift=false"})
-		// Choose an old static image (AL2023 AMIs don't exist for 1.22)
-		parameterName := lo.Ternary(lo.Must(strconv.Atoi(strings.Split(env.GetK8sVersion(0), ".")[1])) == 23,
-			"/aws/service/eks/optimized-ami/1.23/amazon-linux-2023/arm64/standard/amazon-eks-node-al2023-arm64-standard-1.23-v20240307/image_id",
-			fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended/image_id", version),
-		)
-		parameter, err := env.SSMAPI.GetParameter(&ssm.GetParameterInput{
-			Name: awssdk.String(parameterName),
-		})
-		Expect(err).To(BeNil())
-		oldCustomAMI := *parameter.Parameter.Value
-		nodeClass.Spec.AMIFamily = &v1beta1.AMIFamilyAL2023
-		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{{ID: oldCustomAMI}}
+		env.ExpectSettingsOverridden(corev1.EnvVar{Name: "FEATURE_GATES", Value: "Drift=false"})
+
+		oldCustomAMI := env.GetAMIBySSMPath(fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended/image_id", env.K8sVersionWithOffset(1)))
+		nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2023)
+		nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: oldCustomAMI}}
 
 		env.ExpectCreated(dep, nodeClass, nodePool)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 		env.ExpectCreatedNodeCount("==", 1)
 
 		node := env.Monitor.CreatedNodes()[0]
-		nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{{ID: amdAMI}}
+		nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: amdAMI}}
 		env.ExpectUpdated(nodeClass)
 
 		// We should consistently get the same node existing for a minute
 		Consistently(func(g Gomega) {
-			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(node), &v1.Node{})).To(Succeed())
+			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(node), &corev1.Node{})).To(Succeed())
 		}).WithTimeout(time.Minute).Should(Succeed())
 	})
 	It("should disrupt nodes that have drifted due to securitygroup", func() {
@@ -529,9 +481,9 @@ var _ = Describe("Drift", func() {
 			}
 			return "", false
 		})
-		sgTerms := []v1beta1.SecurityGroupSelectorTerm{{ID: awssdk.StringValue(testSecurityGroup.GroupId)}}
+		sgTerms := []v1.SecurityGroupSelectorTerm{{ID: awssdk.StringValue(testSecurityGroup.GroupId)}}
 		for _, id := range awsIDs {
-			sgTerms = append(sgTerms, v1beta1.SecurityGroupSelectorTerm{ID: id})
+			sgTerms = append(sgTerms, v1.SecurityGroupSelectorTerm{ID: id})
 		}
 		nodeClass.Spec.SecurityGroupSelectorTerms = sgTerms
 
@@ -540,7 +492,7 @@ var _ = Describe("Drift", func() {
 		nodeClaim := env.EventuallyExpectCreatedNodeClaimCount("==", 1)[0]
 		node := env.ExpectCreatedNodeCount("==", 1)[0]
 
-		sgTerms = lo.Reject(sgTerms, func(t v1beta1.SecurityGroupSelectorTerm, _ int) bool {
+		sgTerms = lo.Reject(sgTerms, func(t v1.SecurityGroupSelectorTerm, _ int) bool {
 			return t.ID == awssdk.StringValue(testSecurityGroup.GroupId)
 		})
 		nodeClass.Spec.SecurityGroupSelectorTerms = sgTerms
@@ -548,45 +500,51 @@ var _ = Describe("Drift", func() {
 
 		env.EventuallyExpectDrifted(nodeClaim)
 
-		delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+		delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 		env.ExpectUpdated(pod)
 		env.EventuallyExpectNotFound(pod, nodeClaim, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 	})
 	It("should disrupt nodes that have drifted due to subnets", func() {
-		subnets := env.GetSubnetNameAndIds(map[string]string{"karpenter.sh/discovery": env.ClusterName})
+		subnets := env.GetSubnetInfo(map[string]string{"karpenter.sh/discovery": env.ClusterName})
 		Expect(len(subnets)).To(BeNumerically(">", 1))
 
-		nodeClass.Spec.SubnetSelectorTerms = []v1beta1.SubnetSelectorTerm{{ID: subnets[0].ID}}
+		nodeClass.Spec.SubnetSelectorTerms = []v1.SubnetSelectorTerm{{ID: subnets[0].ID}}
 
 		env.ExpectCreated(dep, nodeClass, nodePool)
 		pod := env.EventuallyExpectHealthyPodCount(selector, numPods)[0]
 		nodeClaim := env.EventuallyExpectCreatedNodeClaimCount("==", 1)[0]
 		node := env.ExpectCreatedNodeCount("==", 1)[0]
 
-		nodeClass.Spec.SubnetSelectorTerms = []v1beta1.SubnetSelectorTerm{{ID: subnets[1].ID}}
+		nodeClass.Spec.SubnetSelectorTerms = []v1.SubnetSelectorTerm{{ID: subnets[1].ID}}
 		env.ExpectCreatedOrUpdated(nodeClass)
 
 		env.EventuallyExpectDrifted(nodeClaim)
 
-		delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+		delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 		env.ExpectUpdated(pod)
 		env.EventuallyExpectNotFound(pod, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 	})
-	DescribeTable("NodePool Drift", func(nodeClaimTemplate corev1beta1.NodeClaimTemplate) {
+	DescribeTable("NodePool Drift", func(nodeClaimTemplate karpv1.NodeClaimTemplate) {
 		updatedNodePool := coretest.NodePool(
-			corev1beta1.NodePool{
-				Spec: corev1beta1.NodePoolSpec{
-					Template: corev1beta1.NodeClaimTemplate{
-						Spec: corev1beta1.NodeClaimSpec{
-							NodeClassRef: &corev1beta1.NodeClassReference{Name: nodeClass.Name},
+			karpv1.NodePool{
+				Spec: karpv1.NodePoolSpec{
+					Template: karpv1.NodeClaimTemplate{
+						Spec: karpv1.NodeClaimTemplateSpec{
+							NodeClassRef: &karpv1.NodeClassReference{
+								Group: object.GVK(nodeClass).Group,
+								Kind:  object.GVK(nodeClass).Kind,
+								Name:  nodeClass.Name,
+							},
+							// keep the same instance type requirements to prevent considering instance types that require swap
+							Requirements: nodePool.Spec.Template.Spec.Requirements,
 						},
 					},
 				},
 			},
-			corev1beta1.NodePool{
-				Spec: corev1beta1.NodePoolSpec{
+			karpv1.NodePool{
+				Spec: karpv1.NodePoolSpec{
 					Template: nodeClaimTemplate,
 				},
 			},
@@ -602,7 +560,7 @@ var _ = Describe("Drift", func() {
 
 		env.EventuallyExpectDrifted(nodeClaim)
 
-		delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+		delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 		env.ExpectUpdated(pod)
 
 		// Nodes will need to have the start-up taint removed before the node can be considered as initialized
@@ -616,50 +574,52 @@ var _ = Describe("Drift", func() {
 			// Remove the startup taints from the new nodes to initialize them
 			Eventually(func(g Gomega) {
 				g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodeTwo), nodeTwo)).To(Succeed())
+				g.Expect(len(nodeTwo.Spec.Taints)).To(BeNumerically("==", 1))
+				_, found := lo.Find(nodeTwo.Spec.Taints, func(t corev1.Taint) bool {
+					return t.MatchTaint(&corev1.Taint{Key: "example.com/another-taint-2", Effect: corev1.TaintEffectPreferNoSchedule})
+				})
+				g.Expect(found).To(BeTrue())
 				stored := nodeTwo.DeepCopy()
-				nodeTwo.Spec.Taints = lo.Reject(nodeTwo.Spec.Taints, func(t v1.Taint, _ int) bool { return t.Key == "example.com/another-taint-2" })
+				nodeTwo.Spec.Taints = lo.Reject(nodeTwo.Spec.Taints, func(t corev1.Taint, _ int) bool { return t.Key == "example.com/another-taint-2" })
 				g.Expect(env.Client.Patch(env.Context, nodeTwo, client.StrategicMergeFrom(stored))).To(Succeed())
 			}).Should(Succeed())
 		}
 		env.EventuallyExpectNotFound(pod, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 	},
-		Entry("Annotations", corev1beta1.NodeClaimTemplate{
-			ObjectMeta: corev1beta1.ObjectMeta{
+		Entry("Annotations", karpv1.NodeClaimTemplate{
+			ObjectMeta: karpv1.ObjectMeta{
 				Annotations: map[string]string{"keyAnnotationTest": "valueAnnotationTest"},
 			},
 		}),
-		Entry("Labels", corev1beta1.NodeClaimTemplate{
-			ObjectMeta: corev1beta1.ObjectMeta{
+		Entry("Labels", karpv1.NodeClaimTemplate{
+			ObjectMeta: karpv1.ObjectMeta{
 				Labels: map[string]string{"keyLabelTest": "valueLabelTest"},
 			},
 		}),
-		Entry("Taints", corev1beta1.NodeClaimTemplate{
-			Spec: corev1beta1.NodeClaimSpec{
-				Taints: []v1.Taint{{Key: "example.com/another-taint-2", Effect: v1.TaintEffectPreferNoSchedule}},
+		Entry("Taints", karpv1.NodeClaimTemplate{
+			Spec: karpv1.NodeClaimTemplateSpec{
+				Taints: []corev1.Taint{{Key: "example.com/another-taint-2", Effect: corev1.TaintEffectPreferNoSchedule}},
 			},
 		}),
-		Entry("KubeletConfiguration", corev1beta1.NodeClaimTemplate{
-			Spec: corev1beta1.NodeClaimSpec{
-				Kubelet: &corev1beta1.KubeletConfiguration{
-					EvictionSoft:            map[string]string{"memory.available": "5%"},
-					EvictionSoftGracePeriod: map[string]metav1.Duration{"memory.available": {Duration: time.Minute}},
+		Entry("Start-up Taints", karpv1.NodeClaimTemplate{
+			Spec: karpv1.NodeClaimTemplateSpec{
+				StartupTaints: []corev1.Taint{{Key: "example.com/another-taint-2", Effect: corev1.TaintEffectPreferNoSchedule}},
+			},
+		}),
+		Entry("NodeRequirements", karpv1.NodeClaimTemplate{
+			Spec: karpv1.NodeClaimTemplateSpec{
+				// since this will overwrite the default requirements, add instance category and family selectors back into requirements
+				Requirements: []karpv1.NodeSelectorRequirementWithMinValues{
+					{NodeSelectorRequirement: corev1.NodeSelectorRequirement{Key: karpv1.CapacityTypeLabelKey, Operator: corev1.NodeSelectorOpIn, Values: []string{karpv1.CapacityTypeSpot}}},
+					{NodeSelectorRequirement: corev1.NodeSelectorRequirement{Key: v1.LabelInstanceCategory, Operator: corev1.NodeSelectorOpIn, Values: []string{"c", "m", "r"}}},
+					{NodeSelectorRequirement: corev1.NodeSelectorRequirement{Key: v1.LabelInstanceFamily, Operator: corev1.NodeSelectorOpNotIn, Values: []string{"a1"}}},
 				},
 			},
 		}),
-		Entry("Start-up Taints", corev1beta1.NodeClaimTemplate{
-			Spec: corev1beta1.NodeClaimSpec{
-				StartupTaints: []v1.Taint{{Key: "example.com/another-taint-2", Effect: v1.TaintEffectPreferNoSchedule}},
-			},
-		}),
-		Entry("NodeRequirements", corev1beta1.NodeClaimTemplate{
-			Spec: corev1beta1.NodeClaimSpec{
-				Requirements: []corev1beta1.NodeSelectorRequirementWithMinValues{{NodeSelectorRequirement: v1.NodeSelectorRequirement{Key: corev1beta1.CapacityTypeLabelKey, Operator: v1.NodeSelectorOpIn, Values: []string{corev1beta1.CapacityTypeSpot}}}},
-			},
-		}),
 	)
-	DescribeTable("EC2NodeClass", func(nodeClassSpec v1beta1.EC2NodeClassSpec) {
-		updatedNodeClass := test.EC2NodeClass(v1beta1.EC2NodeClass{Spec: *nodeClass.Spec.DeepCopy()}, v1beta1.EC2NodeClass{Spec: nodeClassSpec})
+	DescribeTable("EC2NodeClass", func(nodeClassSpec v1.EC2NodeClassSpec) {
+		updatedNodeClass := test.EC2NodeClass(v1.EC2NodeClass{Spec: *nodeClass.Spec.DeepCopy()}, v1.EC2NodeClass{Spec: nodeClassSpec})
 		updatedNodeClass.ObjectMeta = nodeClass.ObjectMeta
 
 		env.ExpectCreated(dep, nodeClass, nodePool)
@@ -671,25 +631,33 @@ var _ = Describe("Drift", func() {
 
 		env.EventuallyExpectDrifted(nodeClaim)
 
-		delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+		delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 		env.ExpectUpdated(pod)
 		env.EventuallyExpectNotFound(pod, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 	},
-		Entry("UserData", v1beta1.EC2NodeClassSpec{UserData: awssdk.String("#!/bin/bash\necho \"Hello, AL2023\"")}),
-		Entry("Tags", v1beta1.EC2NodeClassSpec{Tags: map[string]string{"keyTag-test-3": "valueTag-test-3"}}),
-		Entry("MetadataOptions", v1beta1.EC2NodeClassSpec{MetadataOptions: &v1beta1.MetadataOptions{HTTPTokens: awssdk.String("required"), HTTPPutResponseHopLimit: awssdk.Int64(10)}}),
-		Entry("BlockDeviceMappings", v1beta1.EC2NodeClassSpec{BlockDeviceMappings: []*v1beta1.BlockDeviceMapping{
+		Entry("UserData", v1.EC2NodeClassSpec{UserData: awssdk.String("#!/bin/bash\necho \"Hello, AL2023\"")}),
+		Entry("Tags", v1.EC2NodeClassSpec{Tags: map[string]string{"keyTag-test-3": "valueTag-test-3"}}),
+		Entry("MetadataOptions", v1.EC2NodeClassSpec{MetadataOptions: &v1.MetadataOptions{HTTPTokens: awssdk.String("required"), HTTPPutResponseHopLimit: awssdk.Int64(10)}}),
+		Entry("BlockDeviceMappings", v1.EC2NodeClassSpec{BlockDeviceMappings: []*v1.BlockDeviceMapping{
 			{
 				DeviceName: awssdk.String("/dev/xvda"),
-				EBS: &v1beta1.BlockDevice{
+				EBS: &v1.BlockDevice{
 					VolumeSize: resources.Quantity("20Gi"),
 					VolumeType: awssdk.String("gp3"),
 					Encrypted:  awssdk.Bool(true),
 				},
 			}}}),
-		Entry("DetailedMonitoring", v1beta1.EC2NodeClassSpec{DetailedMonitoring: awssdk.Bool(true)}),
-		Entry("AMIFamily", v1beta1.EC2NodeClassSpec{AMIFamily: awssdk.String(v1beta1.AMIFamilyBottlerocket)}),
+		Entry("DetailedMonitoring", v1.EC2NodeClassSpec{DetailedMonitoring: awssdk.Bool(true)}),
+		Entry("AMIFamily", v1.EC2NodeClassSpec{
+			AMISelectorTerms: []v1.AMISelectorTerm{{Alias: "bottlerocket@latest"}},
+		}),
+		Entry("KubeletConfiguration", v1.EC2NodeClassSpec{
+			Kubelet: &v1.KubeletConfiguration{
+				EvictionSoft:            map[string]string{"memory.available": "5%"},
+				EvictionSoftGracePeriod: map[string]metav1.Duration{"memory.available": {Duration: time.Minute}},
+			},
+		}),
 	)
 	It("should drift the EC2NodeClass on InstanceProfile", func() {
 		// Create a separate test case for this one since we can't use the default NodeClass that's created due to it having
@@ -717,16 +685,16 @@ var _ = Describe("Drift", func() {
 
 		env.EventuallyExpectDrifted(nodeClaim)
 
-		delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+		delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 		env.ExpectUpdated(pod)
 		env.EventuallyExpectNotFound(pod, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 	})
 	It("should drift the EC2NodeClass on BlockDeviceMappings volume size update", func() {
-		nodeClass.Spec.BlockDeviceMappings = []*v1beta1.BlockDeviceMapping{
+		nodeClass.Spec.BlockDeviceMappings = []*v1.BlockDeviceMapping{
 			{
 				DeviceName: awssdk.String("/dev/xvda"),
-				EBS: &v1beta1.BlockDevice{
+				EBS: &v1.BlockDevice{
 					VolumeSize: resources.Quantity("20Gi"),
 					VolumeType: awssdk.String("gp3"),
 					Encrypted:  awssdk.Bool(true),
@@ -744,11 +712,11 @@ var _ = Describe("Drift", func() {
 		By("validating the drifted status condition has propagated")
 		Eventually(func(g Gomega) {
 			g.Expect(env.Client.Get(env, client.ObjectKeyFromObject(nodeClaim), nodeClaim)).To(Succeed())
-			g.Expect(nodeClaim.StatusConditions().GetCondition(corev1beta1.Drifted)).ToNot(BeNil())
-			g.Expect(nodeClaim.StatusConditions().GetCondition(corev1beta1.Drifted).IsTrue()).To(BeTrue())
+			g.Expect(nodeClaim.StatusConditions().Get(karpv1.ConditionTypeDrifted)).ToNot(BeNil())
+			g.Expect(nodeClaim.StatusConditions().Get(karpv1.ConditionTypeDrifted).IsTrue()).To(BeTrue())
 		}).Should(Succeed())
 
-		delete(pod.Annotations, corev1beta1.DoNotDisruptAnnotationKey)
+		delete(pod.Annotations, karpv1.DoNotDisruptAnnotationKey)
 		env.ExpectUpdated(pod)
 		env.EventuallyExpectNotFound(pod, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
@@ -757,23 +725,23 @@ var _ = Describe("Drift", func() {
 		env.ExpectCreated(dep, nodeClass, nodePool)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 		nodeClaim := env.EventuallyExpectCreatedNodeClaimCount("==", 1)[0]
-		nodePool = env.ExpectExists(nodePool).(*corev1beta1.NodePool)
+		nodePool = env.ExpectExists(nodePool).(*karpv1.NodePool)
 		expectedHash := nodePool.Hash()
 
-		By(fmt.Sprintf("expect nodepool %s and nodeclaim %s to contain %s and %s annotations", nodePool.Name, nodeClaim.Name, corev1beta1.NodePoolHashAnnotationKey, corev1beta1.NodePoolHashVersionAnnotationKey))
+		By(fmt.Sprintf("expect nodepool %s and nodeclaim %s to contain %s and %s annotations", nodePool.Name, nodeClaim.Name, karpv1.NodePoolHashAnnotationKey, karpv1.NodePoolHashVersionAnnotationKey))
 		Eventually(func(g Gomega) {
 			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodePool), nodePool)).To(Succeed())
 			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodeClaim), nodeClaim)).To(Succeed())
 
-			g.Expect(nodePool.Annotations).To(HaveKeyWithValue(corev1beta1.NodePoolHashAnnotationKey, expectedHash))
-			g.Expect(nodePool.Annotations).To(HaveKeyWithValue(corev1beta1.NodePoolHashVersionAnnotationKey, corev1beta1.NodePoolHashVersion))
-			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(corev1beta1.NodePoolHashAnnotationKey, expectedHash))
-			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(corev1beta1.NodePoolHashVersionAnnotationKey, corev1beta1.NodePoolHashVersion))
+			g.Expect(nodePool.Annotations).To(HaveKeyWithValue(karpv1.NodePoolHashAnnotationKey, expectedHash))
+			g.Expect(nodePool.Annotations).To(HaveKeyWithValue(karpv1.NodePoolHashVersionAnnotationKey, karpv1.NodePoolHashVersion))
+			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(karpv1.NodePoolHashAnnotationKey, expectedHash))
+			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(karpv1.NodePoolHashVersionAnnotationKey, karpv1.NodePoolHashVersion))
 		}).WithTimeout(30 * time.Second).Should(Succeed())
 
 		nodePool.Annotations = lo.Assign(nodePool.Annotations, map[string]string{
-			corev1beta1.NodePoolHashAnnotationKey:        "test-hash-1",
-			corev1beta1.NodePoolHashVersionAnnotationKey: "test-hash-version-1",
+			karpv1.NodePoolHashAnnotationKey:        "test-hash-1",
+			karpv1.NodePoolHashVersionAnnotationKey: "test-hash-version-1",
 		})
 		// Updating `nodePool.Spec.Template.Annotations` would normally trigger drift on all nodeclaims owned by the
 		// nodepool. However, the nodepool-hash-version does not match the controller hash version, so we will see that
@@ -782,8 +750,8 @@ var _ = Describe("Drift", func() {
 			"test-key": "test-value",
 		})
 		nodeClaim.Annotations = lo.Assign(nodePool.Annotations, map[string]string{
-			corev1beta1.NodePoolHashAnnotationKey:        "test-hash-2",
-			corev1beta1.NodePoolHashVersionAnnotationKey: "test-hash-version-2",
+			karpv1.NodePoolHashAnnotationKey:        "test-hash-2",
+			karpv1.NodePoolHashVersionAnnotationKey: "test-hash-version-2",
 		})
 
 		// The nodeclaim will need to be updated first, as the hash controller will only be triggered on changes to the nodepool
@@ -795,33 +763,33 @@ var _ = Describe("Drift", func() {
 			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodePool), nodePool)).To(Succeed())
 			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodeClaim), nodeClaim)).To(Succeed())
 
-			g.Expect(nodePool.Annotations).To(HaveKeyWithValue(corev1beta1.NodePoolHashAnnotationKey, expectedHash))
-			g.Expect(nodePool.Annotations).To(HaveKeyWithValue(corev1beta1.NodePoolHashVersionAnnotationKey, corev1beta1.NodePoolHashVersion))
-			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(corev1beta1.NodePoolHashAnnotationKey, expectedHash))
-			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(corev1beta1.NodePoolHashVersionAnnotationKey, corev1beta1.NodePoolHashVersion))
+			g.Expect(nodePool.Annotations).To(HaveKeyWithValue(karpv1.NodePoolHashAnnotationKey, expectedHash))
+			g.Expect(nodePool.Annotations).To(HaveKeyWithValue(karpv1.NodePoolHashVersionAnnotationKey, karpv1.NodePoolHashVersion))
+			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(karpv1.NodePoolHashAnnotationKey, expectedHash))
+			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(karpv1.NodePoolHashVersionAnnotationKey, karpv1.NodePoolHashVersion))
 		})
 	})
 	It("should update the ec2nodeclass-hash annotation on the ec2nodeclass and nodeclaim when the ec2nodeclass's ec2nodeclass-hash-version annotation does not match the controller hash version", func() {
 		env.ExpectCreated(dep, nodeClass, nodePool)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 		nodeClaim := env.EventuallyExpectCreatedNodeClaimCount("==", 1)[0]
-		nodeClass = env.ExpectExists(nodeClass).(*v1beta1.EC2NodeClass)
+		nodeClass = env.ExpectExists(nodeClass).(*v1.EC2NodeClass)
 		expectedHash := nodeClass.Hash()
 
-		By(fmt.Sprintf("expect nodeclass %s and nodeclaim %s to contain %s and %s annotations", nodeClass.Name, nodeClaim.Name, v1beta1.AnnotationEC2NodeClassHash, v1beta1.AnnotationEC2NodeClassHashVersion))
+		By(fmt.Sprintf("expect nodeclass %s and nodeclaim %s to contain %s and %s annotations", nodeClass.Name, nodeClaim.Name, v1.AnnotationEC2NodeClassHash, v1.AnnotationEC2NodeClassHashVersion))
 		Eventually(func(g Gomega) {
 			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodeClass), nodeClass)).To(Succeed())
 			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodeClaim), nodeClaim)).To(Succeed())
 
-			g.Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, expectedHash))
-			g.Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
-			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, expectedHash))
-			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
+			g.Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1.AnnotationEC2NodeClassHash, expectedHash))
+			g.Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1.AnnotationEC2NodeClassHashVersion, v1.EC2NodeClassHashVersion))
+			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1.AnnotationEC2NodeClassHash, expectedHash))
+			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1.AnnotationEC2NodeClassHashVersion, v1.EC2NodeClassHashVersion))
 		}).WithTimeout(30 * time.Second).Should(Succeed())
 
 		nodeClass.Annotations = lo.Assign(nodeClass.Annotations, map[string]string{
-			v1beta1.AnnotationEC2NodeClassHash:        "test-hash-1",
-			v1beta1.AnnotationEC2NodeClassHashVersion: "test-hash-version-1",
+			v1.AnnotationEC2NodeClassHash:        "test-hash-1",
+			v1.AnnotationEC2NodeClassHashVersion: "test-hash-version-1",
 		})
 		// Updating `nodeClass.Spec.Tags` would normally trigger drift on all nodeclaims using the
 		// nodeclass. However, the ec2nodeclass-hash-version does not match the controller hash version, so we will see that
@@ -830,8 +798,8 @@ var _ = Describe("Drift", func() {
 			"test-key": "test-value",
 		})
 		nodeClaim.Annotations = lo.Assign(nodePool.Annotations, map[string]string{
-			v1beta1.AnnotationEC2NodeClassHash:        "test-hash-2",
-			v1beta1.AnnotationEC2NodeClassHashVersion: "test-hash-version-2",
+			v1.AnnotationEC2NodeClassHash:        "test-hash-2",
+			v1.AnnotationEC2NodeClassHashVersion: "test-hash-version-2",
 		})
 
 		// The nodeclaim will need to be updated first, as the hash controller will only be triggered on changes to the nodeclass
@@ -843,23 +811,23 @@ var _ = Describe("Drift", func() {
 			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodeClass), nodeClass)).To(Succeed())
 			g.Expect(env.Client.Get(env.Context, client.ObjectKeyFromObject(nodeClaim), nodeClaim)).To(Succeed())
 
-			g.Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, expectedHash))
-			g.Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
-			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHash, expectedHash))
-			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1beta1.AnnotationEC2NodeClassHashVersion, v1beta1.EC2NodeClassHashVersion))
+			g.Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1.AnnotationEC2NodeClassHash, expectedHash))
+			g.Expect(nodeClass.Annotations).To(HaveKeyWithValue(v1.AnnotationEC2NodeClassHashVersion, v1.EC2NodeClassHashVersion))
+			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1.AnnotationEC2NodeClassHash, expectedHash))
+			g.Expect(nodeClaim.Annotations).To(HaveKeyWithValue(v1.AnnotationEC2NodeClassHashVersion, v1.EC2NodeClassHashVersion))
 		}).WithTimeout(30 * time.Second).Should(Succeed())
 		env.ConsistentlyExpectNodeClaimsNotDrifted(time.Minute, nodeClaim)
 	})
 	Context("Failure", func() {
-		It("should not continue to drift if a node never registers", func() {
+		It("should not disrupt a drifted node if the replacement node never registers", func() {
 			// launch a new nodeClaim
 			var numPods int32 = 2
 			dep := coretest.Deployment(coretest.DeploymentOptions{
 				Replicas: 2,
 				PodOptions: coretest.PodOptions{
 					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "inflate"}},
-					PodAntiRequirements: []v1.PodAffinityTerm{{
-						TopologyKey: v1.LabelHostname,
+					PodAntiRequirements: []corev1.PodAffinityTerm{{
+						TopologyKey: corev1.LabelHostname,
 						LabelSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"app": "inflate"},
 						}},
@@ -872,48 +840,39 @@ var _ = Describe("Drift", func() {
 			env.EventuallyExpectCreatedNodeCount("==", int(numPods))
 
 			// Drift the nodeClaim with bad configuration that will not register a NodeClaim
-			parameter, err := env.SSMAPI.GetParameter(&ssm.GetParameterInput{
-				Name: awssdk.String("/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-ebs"),
-			})
-			Expect(err).ToNot(HaveOccurred())
-			nodeClass.Spec.AMISelectorTerms = []v1beta1.AMISelectorTerm{{ID: *parameter.Parameter.Value}}
+			nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2)
+			nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: env.GetAMIBySSMPath("/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-ebs")}}
 			env.ExpectCreatedOrUpdated(nodeClass)
 
 			env.EventuallyExpectDrifted(startingNodeClaimState...)
 
-			// Expect nodes To get tainted
+			// Expect only a single node to be tainted due to default disruption budgets
 			taintedNodes := env.EventuallyExpectTaintedNodeCount("==", 1)
 
 			// Drift should fail and the original node should be untainted
 			// TODO: reduce timeouts when disruption waits are factored out
 			env.EventuallyExpectNodesUntaintedWithTimeout(11*time.Minute, taintedNodes...)
 
-			// We give another 6 minutes here to handle the deletion at the 15m registration timeout
-			Eventually(func(g Gomega) {
-				nodeClaims := &corev1beta1.NodeClaimList{}
-				g.Expect(env.Client.List(env, nodeClaims, client.HasLabels{coretest.DiscoveryLabel})).To(Succeed())
-				g.Expect(nodeClaims.Items).To(HaveLen(int(numPods)))
-			}).WithTimeout(6 * time.Minute).Should(Succeed())
-
-			// Expect all the NodeClaims that existed on the initial provisioning loop are not removed
+			// Expect all the NodeClaims that existed on the initial provisioning loop are not removed.
+			// Assert this over several minutes to ensure a subsequent disruption controller pass doesn't
+			// successfully schedule the evicted pods to the in-flight nodeclaim and disrupt the original node
 			Consistently(func(g Gomega) {
-				nodeClaims := &corev1beta1.NodeClaimList{}
+				nodeClaims := &karpv1.NodeClaimList{}
 				g.Expect(env.Client.List(env, nodeClaims, client.HasLabels{coretest.DiscoveryLabel})).To(Succeed())
-
-				startingNodeClaimUIDs := lo.Map(startingNodeClaimState, func(nc *corev1beta1.NodeClaim, _ int) types.UID { return nc.UID })
-				nodeClaimUIDs := lo.Map(nodeClaims.Items, func(nc corev1beta1.NodeClaim, _ int) types.UID { return nc.UID })
-				g.Expect(sets.New(nodeClaimUIDs...).IsSuperset(sets.New(startingNodeClaimUIDs...))).To(BeTrue())
+				startingNodeClaimUIDs := sets.New(lo.Map(startingNodeClaimState, func(nc *karpv1.NodeClaim, _ int) types.UID { return nc.UID })...)
+				nodeClaimUIDs := sets.New(lo.Map(nodeClaims.Items, func(nc karpv1.NodeClaim, _ int) types.UID { return nc.UID })...)
+				g.Expect(nodeClaimUIDs.IsSuperset(startingNodeClaimUIDs)).To(BeTrue())
 			}, "2m").Should(Succeed())
 		})
-		It("should not continue to drift if a node registers but never becomes initialized", func() {
+		It("should not disrupt a drifted node if the replacement node registers but never initialized", func() {
 			// launch a new nodeClaim
 			var numPods int32 = 2
 			dep := coretest.Deployment(coretest.DeploymentOptions{
 				Replicas: 2,
 				PodOptions: coretest.PodOptions{
 					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "inflate"}},
-					PodAntiRequirements: []v1.PodAffinityTerm{{
-						TopologyKey: v1.LabelHostname,
+					PodAntiRequirements: []corev1.PodAffinityTerm{{
+						TopologyKey: corev1.LabelHostname,
 						LabelSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"app": "inflate"},
 						}},
@@ -926,12 +885,12 @@ var _ = Describe("Drift", func() {
 			env.EventuallyExpectCreatedNodeCount("==", int(numPods))
 
 			// Drift the nodeClaim with bad configuration that never initializes
-			nodePool.Spec.Template.Spec.StartupTaints = []v1.Taint{{Key: "example.com/taint", Effect: v1.TaintEffectPreferNoSchedule}}
+			nodePool.Spec.Template.Spec.StartupTaints = []corev1.Taint{{Key: "example.com/taint", Effect: corev1.TaintEffectPreferNoSchedule}}
 			env.ExpectCreatedOrUpdated(nodePool)
 
 			env.EventuallyExpectDrifted(startingNodeClaimState...)
 
-			// Expect nodes to be tainted
+			// Expect only a single node to get tainted due to default disruption budgets
 			taintedNodes := env.EventuallyExpectTaintedNodeCount("==", 1)
 
 			// Drift should fail and original node should be untainted
@@ -939,22 +898,23 @@ var _ = Describe("Drift", func() {
 			env.EventuallyExpectNodesUntaintedWithTimeout(11*time.Minute, taintedNodes...)
 
 			// Expect that the new nodeClaim/node is kept around after the un-cordon
-			nodeList := &v1.NodeList{}
+			nodeList := &corev1.NodeList{}
 			Expect(env.Client.List(env, nodeList, client.HasLabels{coretest.DiscoveryLabel})).To(Succeed())
 			Expect(nodeList.Items).To(HaveLen(int(numPods) + 1))
 
-			nodeClaimList := &corev1beta1.NodeClaimList{}
+			nodeClaimList := &karpv1.NodeClaimList{}
 			Expect(env.Client.List(env, nodeClaimList, client.HasLabels{coretest.DiscoveryLabel})).To(Succeed())
 			Expect(nodeClaimList.Items).To(HaveLen(int(numPods) + 1))
 
 			// Expect all the NodeClaims that existed on the initial provisioning loop are not removed
+			// Assert this over several minutes to ensure a subsequent disruption controller pass doesn't
+			// successfully schedule the evicted pods to the in-flight nodeclaim and disrupt the original node
 			Consistently(func(g Gomega) {
-				nodeClaims := &corev1beta1.NodeClaimList{}
+				nodeClaims := &karpv1.NodeClaimList{}
 				g.Expect(env.Client.List(env, nodeClaims, client.HasLabels{coretest.DiscoveryLabel})).To(Succeed())
-
-				startingNodeClaimUIDs := lo.Map(startingNodeClaimState, func(m *corev1beta1.NodeClaim, _ int) types.UID { return m.UID })
-				nodeClaimUIDs := lo.Map(nodeClaims.Items, func(m corev1beta1.NodeClaim, _ int) types.UID { return m.UID })
-				g.Expect(sets.New(nodeClaimUIDs...).IsSuperset(sets.New(startingNodeClaimUIDs...))).To(BeTrue())
+				startingNodeClaimUIDs := sets.New(lo.Map(startingNodeClaimState, func(m *karpv1.NodeClaim, _ int) types.UID { return m.UID })...)
+				nodeClaimUIDs := sets.New(lo.Map(nodeClaims.Items, func(m karpv1.NodeClaim, _ int) types.UID { return m.UID })...)
+				g.Expect(nodeClaimUIDs.IsSuperset(startingNodeClaimUIDs)).To(BeTrue())
 			}, "2m").Should(Succeed())
 		})
 		It("should not drift any nodes if their PodDisruptionBudgets are unhealthy", func() {
@@ -965,15 +925,15 @@ var _ = Describe("Drift", func() {
 				Replicas: 2,
 				PodOptions: coretest.PodOptions{
 					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "inflate"}},
-					PodAntiRequirements: []v1.PodAffinityTerm{{
-						TopologyKey: v1.LabelHostname,
+					PodAntiRequirements: []corev1.PodAffinityTerm{{
+						TopologyKey: corev1.LabelHostname,
 						LabelSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"app": "inflate"},
 						}},
 					},
-					ReadinessProbe: &v1.Probe{
-						ProbeHandler: v1.ProbeHandler{
-							HTTPGet: &v1.HTTPGetAction{
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
 								Port: intstr.FromInt32(80),
 							},
 						},

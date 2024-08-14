@@ -186,7 +186,7 @@ If you require handling for Spot Rebalance Recommendations, you can use the [AWS
 
 Karpenter enables this feature by watching an SQS queue which receives critical events from AWS services which may affect your nodes. Karpenter requires that an SQS queue be provisioned and EventBridge rules and targets be added that forward interruption events from AWS services to the SQS queue. Karpenter provides details for provisioning this infrastructure in the [CloudFormation template in the Getting Started Guide](../../getting-started/getting-started-with-karpenter/#create-the-karpenter-infrastructure-and-iam-roles).
 
-To enable interruption handling, configure the `--interruption-queue-name` CLI argument with the name of the interruption queue provisioned to handle interruption events.
+To enable interruption handling, configure the `--interruption-queue` CLI argument with the name of the interruption queue provisioned to handle interruption events.
 
 ## Controls
 
@@ -223,7 +223,7 @@ spec:
 
 #### Schedule
 Schedule is a cronjob schedule. Generally, the cron syntax is five space-delimited values with options below, with additional special macros like `@yearly`, `@monthly`, `@weekly`, `@daily`, `@hourly`.
-Follow the [Kubernetes documentation](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#writing-a-cronjob-spec) for more information on how to follow the cron syntax.
+Follow the [Kubernetes documentation](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#writing-a-cronjob-spec) for more information on how to follow the cron syntax. Timezones are not currently supported. Schedules are always in UTC.
 
 ```bash
 # ┌───────────── minute (0 - 59)
@@ -236,10 +236,6 @@ Follow the [Kubernetes documentation](https://kubernetes.io/docs/concepts/worklo
 # │ │ │ │ │
 # * * * * *
 ```
-
-{{% alert title="Note" color="primary" %}}
-Timezones are not supported. Most images default to UTC, but it is best practice to ensure this is the case when considering how to define your budgets.
-{{% /alert %}}
 
 #### Duration
 Duration allows compound durations with minutes and hours values such as `10h5m` or `30m` or `160h`. Since cron syntax does not accept denominations smaller than minutes, users can only define minutes or hours.
@@ -291,7 +287,7 @@ metadata:
 
 #### Example: Disable Disruption on a NodePool
 
-NodePool `.spec.annotations` allow you to set annotations that will be applied to all nodes launched by this NodePool. By setting the annotation `karpenter.sh/do-not-disrupt: "true"` on the NodePool, you will selectively prevent all nodes launched by this NodePool from being considered in disruption actions.
+To disable disruption for all nodes launched by a NodePool, you can configure its `.spec.disruption.budgets`. Setting a budget of zero nodes will prevent any of those nodes from being considered for voluntary disruption.
 
 ```yaml
 apiVersion: karpenter.sh/v1beta1
@@ -299,8 +295,7 @@ kind: NodePool
 metadata:
   name: default
 spec:
-  template:
-    metadata:
-      annotations: # will be applied to all nodes
-        karpenter.sh/do-not-disrupt: "true"
+  disruption:
+    budgets:
+      - nodes: "0"
 ```
